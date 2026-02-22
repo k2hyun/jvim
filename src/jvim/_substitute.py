@@ -91,6 +91,8 @@ class SubstituteMixin:
         self._save_undo()
 
         total_count = 0
+        updated: list[str] = []
+        multiline = False
         for row in range(start, end + 1):
             line = self.lines[row]
             if global_flag:
@@ -98,13 +100,25 @@ class SubstituteMixin:
             else:
                 new_line, count = regex.subn(replacement, line, count=1)
             if count > 0:
-                self.lines[row] = new_line
                 total_count += count
+            if "\n" in new_line:
+                multiline = True
+                updated.extend(new_line.split("\n"))
+            else:
+                updated.append(new_line)
 
         if total_count == 0:
             self.undo_stack.pop()
             self.status_msg = f"Pattern not found: {pattern}"
         else:
+            original_count = end - start + 1
+            self.lines[start : end + 1] = updated
+            if multiline:
+                delta = len(updated) - original_count
+                if delta:
+                    self._adjust_line_indices(end + 1, delta)
+                self._folds.clear()
+                self._collapsed_strings.clear()
             self.status_msg = f"{total_count} substitution(s)"
             self._invalidate_caches()
 

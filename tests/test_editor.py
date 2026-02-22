@@ -1590,6 +1590,13 @@ class TestSubstitute:
         editor._exec_command("s/old//g")
         assert editor.lines == ['" text "']
 
+    def test_replacement_with_newline(self):
+        """치환 결과에 줄바꿈이 포함되면 라인이 분할된다."""
+        editor = JsonEditor("A")
+        editor.cursor_row = 0
+        editor._exec_command(r"s/A/\n/")
+        assert editor.lines == ["", ""]
+
     def test_current_line_respects_cursor_row(self):
         """범위 없이 현재 커서 라인만 치환."""
         content = "aaa\nbbb\naaa"
