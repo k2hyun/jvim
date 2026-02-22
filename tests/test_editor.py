@@ -1,5 +1,6 @@
 """Tests for JsonEditor widget."""
 
+from src.jvim.editor import _detect_jsonl
 from src.jvim.widget import JsonEditor, EditorMode
 from src.jvim._jsonpath import parse_jsonpath_filter, jsonpath_value_matches
 
@@ -1790,3 +1791,47 @@ class TestSubstituteJsonPath:
     def test_json_encode_replacement_already_quoted(self):
         """_json_encode_replacement: 이미 따옴표면 그대로."""
         assert JsonEditor._json_encode_replacement('"hello"') == '"hello"'
+
+
+class TestDetectJsonl:
+    """Tests for content-based JSONL detection."""
+
+    def test_single_json_object(self):
+        """단일 JSON 객체는 JSONL이 아님."""
+        assert _detect_jsonl('{"a": 1}') is False
+
+    def test_multiline_json_object(self):
+        """멀티라인 JSON 객체는 JSONL이 아님."""
+        assert _detect_jsonl('{\n    "a": 1,\n    "b": 2\n}') is False
+
+    def test_json_array(self):
+        """JSON 배열은 JSONL이 아님."""
+        assert _detect_jsonl('[{"a": 1}, {"b": 2}]') is False
+
+    def test_two_json_lines(self):
+        """2개의 JSON 줄은 JSONL."""
+        assert _detect_jsonl('{"a": 1}\n{"b": 2}') is True
+
+    def test_multiple_json_lines(self):
+        """여러 JSON 줄은 JSONL."""
+        assert _detect_jsonl('{"a": 1}\n{"b": 2}\n{"c": 3}') is True
+
+    def test_with_empty_lines(self):
+        """빈 줄이 포함되어도 JSONL 감지."""
+        assert _detect_jsonl('{"a": 1}\n\n{"b": 2}') is True
+
+    def test_invalid_line(self):
+        """유효하지 않은 줄이 포함되면 JSONL이 아님."""
+        assert _detect_jsonl('{"a": 1}\ninvalid\n{"b": 2}') is False
+
+    def test_single_line(self):
+        """한 줄만 있으면 JSONL이 아님."""
+        assert _detect_jsonl('{"a": 1}\n') is False
+
+    def test_empty_content(self):
+        """빈 내용은 JSONL이 아님."""
+        assert _detect_jsonl("") is False
+
+    def test_json_values_not_objects(self):
+        """JSON 값이 객체가 아니어도 JSONL 감지."""
+        assert _detect_jsonl("1\n2\n3") is True

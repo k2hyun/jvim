@@ -47,6 +47,28 @@ def _save_history(history: dict) -> None:
         pass  # Silently fail if we can't write history
 
 
+def _detect_jsonl(content: str) -> bool:
+    """내용 기반 JSONL 감지. 2개 이상의 독립 JSON 값이 줄 단위로 존재하면 True."""
+    lines = [ln for ln in content.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    # 전체가 유효한 단일 JSON이면 JSONL이 아님
+    try:
+        json.loads(content)
+        return False
+    except json.JSONDecodeError:
+        pass
+    # 각 줄이 유효한 JSON인지 확인
+    valid = 0
+    for line in lines:
+        try:
+            json.loads(line)
+            valid += 1
+        except json.JSONDecodeError:
+            return False
+    return valid >= 2
+
+
 class JsonEditorApp(App):
     """TUI app that wraps the JsonEditor widget."""
 
@@ -258,7 +280,7 @@ class JsonEditorApp(App):
             return
 
         editor = self.query_one("#editor", JsonEditor)
-        self.jsonl = target.lower().endswith(".jsonl")
+        self.jsonl = target.lower().endswith(".jsonl") or _detect_jsonl(content)
         editor.jsonl = self.jsonl
         editor.set_content(content)
         self.file_path = target
@@ -391,6 +413,8 @@ def main() -> None:
         try:
             if path.exists():
                 initial_content = path.read_text(encoding="utf-8")
+                if not jsonl:
+                    jsonl = _detect_jsonl(initial_content)
             else:
                 # New file — start with empty object / empty line
                 initial_content = "" if jsonl else "{}"
