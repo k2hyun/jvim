@@ -25,6 +25,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **Bracket matching** - Jump to matching brackets with `%`
 - **Undo/Redo** - Full undo history
 - **Substitute** - Vim-style `:s/old/new/g` with regex, range, and flags support
+- **Duplicate key detection** - Highlights duplicate JSON keys with save-time warnings
 
 ## Installation
 
@@ -223,6 +224,16 @@ When the find pattern starts with `$.` or `$[`, substitute operates on JSON stru
 ```
 
 Replacement values are auto-detected: numbers (`42`), booleans (`true`/`false`), `null` stay as-is; everything else is JSON-encoded as a string.
+
+## Duplicate Key Detection
+
+jvim detects duplicate keys in JSON objects and warns you before saving.
+
+- **Visual highlighting** - Lines containing duplicate keys are highlighted with a red background
+- **Load-time warning** - A warning message appears when opening a file with duplicate keys
+- **Save-time protection** - `:w` and `:wq` are blocked when duplicate keys exist (use `:w!` or `:wq!` to force)
+- **`:dupkeys` command** - Shows all duplicate keys with their line numbers
+- **Nested support** - Detects duplicates in nested objects
 
 ## Keybindings
 

@@ -62,6 +62,7 @@
         ":N,Ms/old/new/g": "substitute in line range N to M",
         ":s/$.key/newkey/g": "rename JSON key via JSONPath",
         ":s/$.key=/value/g": "replace JSON value via JSONPath",
+        ":dupkeys": "show duplicate JSON keys",
         ":q": "quit (confirm if changed)",
         ":q!": "quit (discard changes)",
         ":wq": "save and quit",

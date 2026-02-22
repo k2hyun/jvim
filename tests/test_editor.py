@@ -1812,3 +1812,113 @@ class TestSubstituteJsonPath:
     def test_json_encode_replacement_already_quoted(self):
         """_json_encode_replacement: 이미 따옴표면 그대로."""
         assert JsonEditor._json_encode_replacement('"hello"') == '"hello"'
+
+
+class TestDuplicateKeys:
+    """Tests for duplicate JSON key detection (Issue #17)."""
+
+    def test_detect_duplicate_on_init(self):
+        """초기화 시 중복 키 감지."""
+        content = '{\n    "name": "Alice",\n    "name": "Bob"\n}'
+        editor = JsonEditor(content)
+        assert editor._duplicate_key_lines == {1, 2}
+        assert len(editor._duplicate_key_info) == 2
+
+    def test_no_duplicate(self):
+        """중복 없으면 빈 상태."""
+        content = '{\n    "name": "Alice",\n    "age": 30\n}'
+        editor = JsonEditor(content)
+        assert editor._duplicate_key_lines == set()
+        assert editor._duplicate_key_info == []
+
+    def test_detect_on_set_content(self):
+        """set_content 시 중복 키 재감지."""
+        editor = JsonEditor('{"a": 1}')
+        assert editor._duplicate_key_lines == set()
+        editor.set_content('{\n    "x": 1,\n    "x": 2\n}')
+        assert editor._duplicate_key_lines == {1, 2}
+
+    def test_line_background(self):
+        """중복 키 라인에 배경색 적용."""
+        content = '{\n    "name": "A",\n    "name": "B"\n}'
+        editor = JsonEditor(content)
+        assert editor._line_background(1) != ""
+        assert editor._line_background(2) != ""
+        assert editor._line_background(0) == ""
+        assert editor._line_background(3) == ""
+
+    def test_dupkeys_command(self):
+        """:dupkeys 명령으로 중복 키 목록 확인."""
+        content = '{\n    "name": "A",\n    "name": "B"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("dupkeys")
+        assert "name" in editor.status_msg
+        assert "lines" in editor.status_msg
+
+    def test_dupkeys_command_no_duplicates(self):
+        """:dupkeys 중복 없을 때."""
+        editor = JsonEditor('{"a": 1, "b": 2}')
+        editor._exec_command("dupkeys")
+        assert "No duplicate" in editor.status_msg
+
+    def test_save_blocked_with_duplicates(self):
+        """:w 시 중복 키가 있으면 경고."""
+        content = '{\n    "name": "A",\n    "name": "B"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("w")
+        assert "duplicate" in editor.status_msg.lower()
+        assert ":w!" in editor.status_msg
+
+    def test_save_force_with_duplicates(self):
+        """:w! 시 중복 키가 있어도 저장 진행."""
+        content = '{\n    "name": "A",\n    "name": "B"\n}'
+        editor = JsonEditor(content)
+        # :w! 시 FileSaveRequested 메시지가 post되어야 함
+        # 직접 _exec_command 호출 (메시지 큐는 테스트에서 확인 불가하므로 status_msg로 판단)
+        editor._exec_command("w!")
+        # 경고 메시지가 아님 (저장이 진행됨)
+        assert "duplicate" not in editor.status_msg.lower()
+
+    def test_multiple_duplicate_keys(self):
+        """여러 키가 중복."""
+        content = '{\n    "a": 1,\n    "b": 2,\n    "a": 3,\n    "b": 4\n}'
+        editor = JsonEditor(content)
+        assert 1 in editor._duplicate_key_lines
+        assert 2 in editor._duplicate_key_lines
+        assert 3 in editor._duplicate_key_lines
+        assert 4 in editor._duplicate_key_lines
+
+    def test_nested_duplicate_keys(self):
+        """중첩 객체 내 중복 키."""
+        content = '{\n    "data": {\n        "x": 1,\n        "x": 2\n    }\n}'
+        editor = JsonEditor(content)
+        assert 2 in editor._duplicate_key_lines
+        assert 3 in editor._duplicate_key_lines
+
+    def test_find_duplicate_keys_in_text_static(self):
+        """정적 메서드 직접 테스트."""
+        text = '{"a": 1, "b": 2, "a": 3}'
+        result = JsonEditor._find_duplicate_keys_in_text(text)
+        assert len(result) == 1
+        assert result[0][0] == "a"
+
+    def test_find_duplicate_keys_invalid_json(self):
+        """유효하지 않은 JSON이면 빈 결과."""
+        result = JsonEditor._find_duplicate_keys_in_text("{invalid}")
+        assert result == []
+
+    def test_update_clears_old_state(self):
+        """콘텐츠 변경 시 이전 중복 키 상태가 초기화됨."""
+        content = '{\n    "a": 1,\n    "a": 2\n}'
+        editor = JsonEditor(content)
+        assert len(editor._duplicate_key_lines) == 2
+        editor.set_content('{"b": 1}')
+        assert len(editor._duplicate_key_lines) == 0
+
+    def test_wq_blocked_with_duplicates(self):
+        """:wq 시 중복 키가 있으면 경고."""
+        content = '{\n    "name": "A",\n    "name": "B"\n}'
+        editor = JsonEditor(content)
+        editor._exec_command("wq")
+        assert "duplicate" in editor.status_msg.lower()
+        assert ":wq!" in editor.status_msg

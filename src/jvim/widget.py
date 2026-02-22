@@ -150,10 +150,20 @@ class JsonEditor(Widget, can_focus=True):
         self._visual_anchor_row: int = 0  # 선택 시작 row
         self._visual_anchor_col: int = 0  # 선택 시작 col (v 모드용)
         self._yank_type: str = "line"  # "line" | "char" — paste 동작 결정
+        # 중복 키 감지 상태
+        self._duplicate_key_lines: set[int] = set()
+        self._duplicate_key_info: list[tuple[str, int]] = []  # (key, line) 쌍
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
                 self._collapsed_strings.add(i)
+        self._update_duplicate_keys()
+        if self._duplicate_key_lines:
+            keys = sorted({k for k, _ in self._duplicate_key_info})
+            if len(keys) <= 3:
+                self.status_msg = f"Warning: duplicate key(s): {', '.join(keys)}"
+            else:
+                self.status_msg = f"Warning: {len(keys)} duplicate key(s) on {len(self._duplicate_key_lines)} line(s)"
 
     # -- Helpers -----------------------------------------------------------
 
@@ -392,6 +402,13 @@ class JsonEditor(Widget, can_focus=True):
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
                 self._collapsed_strings.add(i)
+        self._update_duplicate_keys()
+        if self._duplicate_key_lines:
+            keys = sorted({k for k, _ in self._duplicate_key_info})
+            if len(keys) <= 3:
+                self.status_msg = f"Warning: duplicate key(s): {', '.join(keys)}"
+            else:
+                self.status_msg = f"Warning: {len(keys)} duplicate key(s) on {len(self._duplicate_key_lines)} line(s)"
         self._invalidate_caches()
         self.refresh()
 
@@ -415,6 +432,8 @@ class JsonEditor(Widget, can_focus=True):
 
     def _line_background(self, line_idx: int) -> str:
         """서브클래스에서 라인별 배경 스타일을 지정하기 위한 훅."""
+        if line_idx in self._duplicate_key_lines:
+            return "on #3a1a1a"
         return ""
 
     def render(self) -> Text:
@@ -1380,7 +1399,15 @@ class JsonEditor(Widget, can_focus=True):
                 if not valid:
                     self.status_msg = err
                     return
+            self._update_duplicate_keys()
+            if self._duplicate_key_lines and not force:
+                keys = sorted({k for k, _ in self._duplicate_key_info})
+                self.status_msg = (
+                    f"Warning: duplicate key(s): {', '.join(keys)} (use :w! to force)"
+                )
+                return
             save = self._pretty_to_jsonl(content) if self.jsonl else content
+            self.status_msg = ""
             self.post_message(self.FileSaveRequested(content=save, file_path=arg))
         elif verb == "q":
             if force:
@@ -1398,7 +1425,15 @@ class JsonEditor(Widget, can_focus=True):
                 if not valid:
                     self.status_msg = err
                     return
+            self._update_duplicate_keys()
+            if self._duplicate_key_lines and not force:
+                keys = sorted({k for k, _ in self._duplicate_key_info})
+                self.status_msg = (
+                    f"Warning: duplicate key(s): {', '.join(keys)} (use :wq! to force)"
+                )
+                return
             save = self._pretty_to_jsonl(content) if self.jsonl else content
+            self.status_msg = ""
             self.post_message(
                 self.FileSaveRequested(content=save, file_path=arg, quit_after=True)
             )
@@ -1414,6 +1449,22 @@ class JsonEditor(Widget, can_focus=True):
                 self._format_json()
         elif verb == "help":
             self.post_message(self.HelpToggleRequested())
+        elif verb == "dupkeys":
+            self._update_duplicate_keys()
+            if not self._duplicate_key_info:
+                self.status_msg = "No duplicate keys found"
+            else:
+                # 키별로 그룹화하여 표시
+                from collections import defaultdict
+
+                by_key: dict[str, list[int]] = defaultdict(list)
+                for key, line in self._duplicate_key_info:
+                    by_key[key].append(line + 1)  # 1-based
+                parts = [
+                    f"{k}: lines {','.join(map(str, vs))}"
+                    for k, vs in sorted(by_key.items())
+                ]
+                self.status_msg = "Duplicates: " + " | ".join(parts)
         else:
             self.status_msg = f"unknown command: :{cmd}"
 
@@ -2497,6 +2548,89 @@ class JsonEditor(Widget, can_focus=True):
             self._current_match = len(self._search_matches) - 1
 
         self._goto_current_match()
+
+    # -- DUPLICATE KEY DETECTION -------------------------------------------
+
+    @staticmethod
+    def _find_duplicate_keys_in_text(text: str) -> list[tuple[str, list[int]]]:
+        """텍스트에서 중복 JSON 키를 찾아 (키이름, [라인번호들]) 목록 반환.
+
+        json.JSONDecoder의 object_pairs_hook을 사용하여 중복을 감지하고,
+        텍스트에서 해당 키의 라인 위치를 매핑.
+        """
+        # 1단계: object_pairs_hook으로 중복 키 이름 수집
+        dup_keys: set[str] = set()
+
+        def hook(pairs: list[tuple[str, any]]) -> dict:
+            seen: dict[str, int] = {}
+            for key, value in pairs:
+                if key in seen:
+                    dup_keys.add(key)
+                seen[key] = value
+            return seen
+
+        try:
+            json.loads(text, object_pairs_hook=hook)
+        except json.JSONDecodeError:
+            return []
+
+        if not dup_keys:
+            return []
+
+        # 2단계: 텍스트에서 중복 키의 라인 위치 찾기
+        lines = text.split("\n")
+        result: list[tuple[str, list[int]]] = []
+        for dup_key in sorted(dup_keys):
+            key_pattern = json.dumps(dup_key, ensure_ascii=False)
+            key_lines: list[int] = []
+            for i, line in enumerate(lines):
+                # 라인 내 모든 위치에서 "key" : 패턴 검색
+                pos = 0
+                while True:
+                    idx = line.find(key_pattern, pos)
+                    if idx < 0:
+                        break
+                    after = line[idx + len(key_pattern) :].lstrip()
+                    if after.startswith(":"):
+                        key_lines.append(i)
+                    pos = idx + 1
+            if len(key_lines) >= 2:
+                result.append((dup_key, key_lines))
+        return result
+
+    def _update_duplicate_keys(self) -> None:
+        """현재 콘텐츠의 중복 키를 감지하고 상태를 갱신."""
+        content = self.get_content()
+        self._duplicate_key_lines.clear()
+        self._duplicate_key_info.clear()
+
+        if self.jsonl:
+            blocks = self._split_jsonl_blocks(content)
+            line_offset = 0
+            for block in blocks:
+                dups = self._find_duplicate_keys_in_text(block)
+                block_lines = block.count("\n") + 1
+                for key, lines in dups:
+                    for line in lines:
+                        abs_line = line_offset + line
+                        self._duplicate_key_lines.add(abs_line)
+                        self._duplicate_key_info.append((key, abs_line))
+                # 블록 간 빈 줄 포함하여 오프셋 계산
+                line_offset += block_lines
+                # 빈 줄 건너뛰기
+                all_lines = content.split("\n")
+                while (
+                    line_offset < len(all_lines) and not all_lines[line_offset].strip()
+                ):
+                    line_offset += 1
+        else:
+            dups = self._find_duplicate_keys_in_text(content)
+            for key, lines in dups:
+                for line in lines:
+                    self._duplicate_key_lines.add(line)
+                    self._duplicate_key_info.append((key, line))
+
+        # status_msg는 호출자가 설정 (set_content, :dupkeys 등)
 
     # -- JSON operations ---------------------------------------------------
 
