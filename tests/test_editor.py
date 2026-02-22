@@ -2,7 +2,7 @@
 
 from src.jvim.editor import _detect_jsonl
 from src.jvim.widget import JsonEditor, EditorMode
-from src.jvim._jsonpath import parse_jsonpath_filter, jsonpath_value_matches
+from src.jvim.action.jsonpath import parse_jsonpath_filter, jsonpath_value_matches
 
 
 class TestEditorBasic:

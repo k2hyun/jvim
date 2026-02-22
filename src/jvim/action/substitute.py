@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from jvim._jsonpath import (
+from jvim.action.jsonpath import (
     get_value_at_path,
     jsonpath_find,
     jsonpath_value_matches,

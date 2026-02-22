@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from jvim._jsonpath import (
+from jvim.action.jsonpath import (
     get_value_at_path,
     jsonpath_find,
     jsonpath_value_matches,
@@ -21,8 +21,7 @@ class SearchMixin:
         char = event.character
 
         if key == "escape":
-            from jvim.widget import EditorMode
-
+            EditorMode = self._mode.__class__
             self._mode = EditorMode.NORMAL
             self._search_buffer = ""
             self._search_history_idx = -1
@@ -30,8 +29,7 @@ class SearchMixin:
             return
 
         if key == "enter":
-            from jvim.widget import EditorMode
-
+            EditorMode = self._mode.__class__
             if self._search_buffer:
                 self._add_to_search_history(self._search_buffer)
                 self._execute_search()
@@ -44,8 +42,7 @@ class SearchMixin:
                 self._search_buffer = self._search_buffer[:-1]
                 self._search_history_idx = -1
             else:
-                from jvim.widget import EditorMode
-
+                EditorMode = self._mode.__class__
                 self._mode = EditorMode.NORMAL
                 self._search_history_idx = -1
             return
