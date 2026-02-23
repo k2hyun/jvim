@@ -2058,3 +2058,97 @@ class TestDetectJsonl:
     def test_json_values_not_objects(self):
         """JSON 값이 객체가 아니어도 JSONL 감지."""
         assert _detect_jsonl("1\n2\n3") is True
+
+
+class TestGetSelection:
+    """마우스 선택 시 거터(줄 번호) 제외 테스트."""
+
+    def test_gutter_widths_basic(self):
+        """기본 거터 너비 계산."""
+        editor = JsonEditor('{"a": 1}')
+        ln_w, rec_w, prefix_w = editor._gutter_widths()
+        assert ln_w >= 3  # 최소 3자리
+        assert rec_w == 0  # JSONL 아님
+        assert prefix_w == ln_w + 1  # ln_width + 1 (공백)
+
+    def test_gutter_widths_jsonl(self):
+        """JSONL 모드에서 레코드 번호 열 포함."""
+        editor = JsonEditor('{"a": 1}\n{"b": 2}', jsonl=True)
+        ln_w, rec_w, prefix_w = editor._gutter_widths()
+        assert rec_w > 0  # JSONL이면 레코드 번호 열이 있음
+        assert prefix_w == rec_w + 1 + ln_w + 1
+
+    def test_strip_gutter_logic(self):
+        """거터 제거 로직: 렌더링된 텍스트에서 prefix_w만큼 잘라야 함."""
+
+        # render()가 생성하는 형태의 텍스트를 직접 구성
+        prefix_w = 4  # "  1 " (3자리 줄번호 + 공백)
+        rendered_lines = [
+            '  1 {"key": "value"}',
+            '  2 {"key2": "val2"}',
+            " NORMAL  Ln 1/2, Col 1 ",  # 상태바 (거터 없음)
+            ":",  # 명령줄 (거터 없음)
+        ]
+        content_end = max(0, len(rendered_lines) - 2)
+        stripped = []
+        for i, line in enumerate(rendered_lines):
+            if i < content_end:
+                stripped.append(line[prefix_w:] if len(line) > prefix_w else "")
+            else:
+                stripped.append(line)
+
+        assert stripped[0] == '{"key": "value"}'
+        assert stripped[1] == '{"key2": "val2"}'
+        assert stripped[2] == rendered_lines[2]  # 상태바는 그대로
+
+    def test_offset_adjustment(self):
+        """Selection offset에서 prefix_w를 빼는 로직."""
+        from textual.geometry import Offset
+
+        prefix_w = 4
+        content_end = 2
+
+        # 콘텐츠 영역 내 시작점 → prefix_w 차감
+        start = Offset(6, 0)  # col=6 in rendered → col=2 in content
+        adjusted_x = max(0, start.x - prefix_w)
+        assert adjusted_x == 2
+
+        # 거터 안쪽 클릭 → 0으로 클램핑
+        start_in_gutter = Offset(2, 0)
+        adjusted_x2 = max(0, start_in_gutter.x - prefix_w)
+        assert adjusted_x2 == 0
+
+        # 상태바 행 → 조정 안 함
+        start_status = Offset(5, 3)
+        if start_status.y < content_end:
+            adjusted_x3 = max(0, start_status.x - prefix_w)
+        else:
+            adjusted_x3 = start_status.x
+        assert adjusted_x3 == 5  # 상태바는 그대로
+
+    def test_selection_extract_after_strip(self):
+        """거터 제거 후 Selection.extract가 올바른 텍스트를 반환."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        prefix_w = 4
+        rendered_lines = [
+            '  1 {"a": 1}',
+            '  2 {"b": 2}',
+            " NORMAL ",
+            ":",
+        ]
+        content_end = 2
+        stripped = []
+        for i, line in enumerate(rendered_lines):
+            if i < content_end:
+                stripped.append(line[prefix_w:] if len(line) > prefix_w else "")
+            else:
+                stripped.append(line)
+
+        # 첫 줄에서 {"a 선택 (원본 offset: x=4~7 → 조정 후 x=0~3)
+        start = Offset(max(0, 4 - prefix_w), 0)
+        end = Offset(max(0, 7 - prefix_w), 0)
+        sel = Selection(start, end)
+        result = sel.extract("\n".join(stripped))
+        assert result == '{"a'

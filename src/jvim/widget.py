@@ -717,6 +717,39 @@ class JsonEditor(
 
         return result
 
+    # -- Selection (마우스 선택 시 거터 제외) --------------------------------
+
+    def get_selection(self, selection) -> tuple[str, str] | None:
+        """마우스 선택 시 거터(줄 번호)를 제외한 콘텐츠만 반환."""
+        from textual.geometry import Offset
+        from textual.selection import Selection as Sel
+
+        visual = self._render()
+        text = str(visual)
+        lines = text.splitlines()
+        if not lines:
+            return "", "\n"
+
+        _, _, prefix_w = self._gutter_widths()
+        # 마지막 2줄(상태바 + 명령줄)은 거터가 없음
+        content_end = max(0, len(lines) - 2)
+        stripped = []
+        for i, line in enumerate(lines):
+            if i < content_end:
+                stripped.append(line[prefix_w:] if len(line) > prefix_w else "")
+            else:
+                stripped.append(line)
+
+        # Selection 오프셋에서 거터 너비를 빼서 조정
+        start = selection.start
+        end = selection.end
+        if start is not None and start.y < content_end:
+            start = Offset(max(0, start.x - prefix_w), start.y)
+        if end is not None and end.y < content_end:
+            end = Offset(max(0, end.x - prefix_w), end.y)
+
+        return Sel(start, end).extract("\n".join(stripped)), "\n"
+
     # -- Wildmenu rendering ------------------------------------------------
 
     def _render_wildmenu(self, result: Text, result_append, width: int) -> None:
@@ -773,7 +806,9 @@ class JsonEditor(
                 result_append(result, prev_name, style="dim on grey23")
                 used += len(prev_name)
             elif avail >= 2:
-                result_append(result, prev_name[: avail - 1] + "\u2026", style="dim on grey23")
+                result_append(
+                    result, prev_name[: avail - 1] + "\u2026", style="dim on grey23"
+                )
                 used += avail
             result_append(result, "  ", style="on grey23")
             used += 2
@@ -799,7 +834,9 @@ class JsonEditor(
                     result_append(result, next_name, style="dim on grey23")
                     remaining -= len(next_name)
                 elif avail >= 2:
-                    result_append(result, next_name[: avail - 1] + "\u2026", style="dim on grey23")
+                    result_append(
+                        result, next_name[: avail - 1] + "\u2026", style="dim on grey23"
+                    )
                     remaining -= avail
             result_append(result, " " * max(0, remaining - 1), style="on grey23")
             result_append(result, ">", style="bold yellow on grey23")
