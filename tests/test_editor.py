@@ -1800,6 +1800,222 @@ class TestSubstituteJsonPath:
         assert JsonEditor._json_encode_replacement('"hello"') == '"hello"'
 
 
+class TestTabCompletion:
+    """Tab 자동완성 테스트."""
+
+    def _key(self, char, key=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(key=key or char, character=char)
+
+    def test_single_match(self, tmp_path):
+        """단일 매칭 시 즉시 완성."""
+        (tmp_path / "data.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/dat"
+        editor._complete_path()
+        assert editor.command_buffer == f"e {tmp_path}/data.json"
+        assert editor._tab_completions == []
+
+    def test_multiple_matches_common_prefix(self, tmp_path):
+        """복수 매칭 시 공통 접두사까지 완성 + 후보 목록."""
+        (tmp_path / "file_a.json").write_text("{}")
+        (tmp_path / "file_b.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/f"
+        editor._complete_path()
+        assert editor.command_buffer == f"e {tmp_path}/file_"
+        assert "file_a.json" in editor._tab_completions
+        assert "file_b.json" in editor._tab_completions
+
+    def test_directory_slash(self, tmp_path):
+        """디렉토리 완성 시 / 자동 추가."""
+        (tmp_path / "subdir").mkdir()
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/sub"
+        editor._complete_path()
+        assert editor.command_buffer == f"e {tmp_path}/subdir/"
+        assert editor._tab_completions == []
+
+    def test_no_match(self, tmp_path):
+        """매칭 없으면 변화 없음."""
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/nonexistent_xyz"
+        editor._complete_path()
+        assert editor.command_buffer == f"e {tmp_path}/nonexistent_xyz"
+        assert editor._tab_completions == []
+
+    def test_non_target_command_ignored(self):
+        """:e, :w 이외 명령은 무시."""
+        editor = JsonEditor()
+        editor.command_buffer = "q"
+        editor._complete_path()
+        assert editor.command_buffer == "q"
+        assert editor._tab_completions == []
+
+    def test_w_command_completion(self, tmp_path):
+        """:w 명령도 자동완성 지원."""
+        (tmp_path / "output.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"w {tmp_path}/out"
+        editor._complete_path()
+        assert editor.command_buffer == f"w {tmp_path}/output.json"
+
+    def test_candidates_cleared_on_other_key(self):
+        """다른 키 입력 시 후보 목록 클리어."""
+        editor = JsonEditor()
+        editor._tab_completions = ["a.json", "b.json"]
+        editor._mode = EditorMode.COMMAND
+        editor._handle_command(self._key("x"))
+        assert editor._tab_completions == []
+
+    def test_hidden_files_excluded(self, tmp_path):
+        """숨김 파일은 후보에서 제외."""
+        (tmp_path / ".hidden").write_text("{}")
+        (tmp_path / "visible.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/"
+        editor._complete_path()
+        assert editor.command_buffer == f"e {tmp_path}/visible.json"
+        assert editor._tab_completions == []
+
+    def test_directory_listing(self, tmp_path):
+        """후보에 디렉토리는 / 표시."""
+        (tmp_path / "adir").mkdir()
+        (tmp_path / "afile.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/a"
+        editor._complete_path()
+        assert "adir/" in editor._tab_completions
+        assert "afile.json" in editor._tab_completions
+
+    def test_empty_partial(self, tmp_path):
+        """경로 없이 :e만 있으면 현재 디렉토리 기준."""
+        editor = JsonEditor()
+        editor.command_buffer = "e "
+        # 빈 partial은 현재 디렉토리 기준 — 에러 없이 동작하면 OK
+        editor._complete_path()
+
+    def test_tab_cycles_through_candidates(self, tmp_path):
+        """Tab 반복 시 후보 순회."""
+        (tmp_path / "aa.json").write_text("{}")
+        (tmp_path / "ab.json").write_text("{}")
+        (tmp_path / "ac.json").write_text("{}")
+        editor = JsonEditor()
+        editor.command_buffer = f"e {tmp_path}/a"
+
+        # 첫 Tab: 공통 접두사 완성 + 후보 저장
+        editor._complete_path()
+        assert len(editor._tab_completions) == 3
+        assert editor._tab_index == -1
+
+        # 두번째 Tab: 첫 번째 후보 선택
+        editor._complete_path()
+        assert editor._tab_index == 0
+        assert editor.command_buffer == f"e {tmp_path}/aa.json"
+
+        # 세번째 Tab: 두 번째 후보
+        editor._complete_path()
+        assert editor._tab_index == 1
+        assert editor.command_buffer == f"e {tmp_path}/ab.json"
+
+        # 네번째 Tab: 세 번째 후보
+        editor._complete_path()
+        assert editor._tab_index == 2
+        assert editor.command_buffer == f"e {tmp_path}/ac.json"
+
+        # 다섯번째 Tab: 다시 첫 번째로 순환
+        editor._complete_path()
+        assert editor._tab_index == 0
+        assert editor.command_buffer == f"e {tmp_path}/aa.json"
+
+    def test_tab_cycle_reset_on_other_key(self, tmp_path):
+        """순회 중 다른 키 입력 시 리셋."""
+        (tmp_path / "aa.json").write_text("{}")
+        (tmp_path / "ab.json").write_text("{}")
+        editor = JsonEditor()
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = f"e {tmp_path}/a"
+        editor._complete_path()
+        editor._complete_path()  # 첫 번째 후보 선택
+        assert editor._tab_index == 0
+
+        # 다른 키 입력
+        editor._handle_command(self._key("x"))
+        assert editor._tab_completions == []
+        assert editor._tab_index == -1
+
+    def test_backspace_filters_candidates(self, tmp_path):
+        """Backspace로 지우면 후보 재필터링."""
+        (tmp_path / "aa.json").write_text("{}")
+        (tmp_path / "ab.json").write_text("{}")
+        (tmp_path / "bc.json").write_text("{}")
+        editor = JsonEditor()
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = f"e {tmp_path}/a"
+        editor._complete_path()
+        assert len(editor._tab_completions) == 2  # aa, ab
+
+        # backspace로 'a' 제거 → 전체 파일 매칭
+        editor.command_buffer = f"e {tmp_path}/a"
+        editor._handle_command(self._key(None, "backspace"))
+        assert editor.command_buffer == f"e {tmp_path}/"
+        assert len(editor._tab_completions) == 3  # aa, ab, bc 전부
+
+    def test_backspace_clears_when_no_match(self, tmp_path):
+        """Backspace 후 매칭 없으면 후보 클리어."""
+        (tmp_path / "data.json").write_text("{}")
+        editor = JsonEditor()
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = f"e {tmp_path}/d"
+        editor._complete_path()
+        assert len(editor._tab_completions) == 0  # 단일 → 즉시 완성
+
+        # 후보 있는 상태에서 경로를 존재하지 않는 디렉토리로 변경
+        editor._tab_completions = ["stale.json"]
+        editor.command_buffer = f"e {tmp_path}/nonexistent/x"
+        editor._handle_command(self._key(None, "backspace"))
+        assert editor._tab_completions == []
+
+    def test_backspace_resets_tab_index(self, tmp_path):
+        """Backspace 후 순회 인덱스 리셋."""
+        (tmp_path / "aa.json").write_text("{}")
+        (tmp_path / "ab.json").write_text("{}")
+        editor = JsonEditor()
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = f"e {tmp_path}/a"
+        editor._complete_path()
+        editor._complete_path()  # tab_index = 0
+        assert editor._tab_index == 0
+
+        editor._handle_command(self._key(None, "backspace"))
+        assert editor._tab_index == -1
+
+    def test_wildmenu_no_overflow(self, tmp_path):
+        """wildmenu 실제 렌더링 결과가 width를 초과하지 않는지 검증."""
+        from rich.text import Text
+
+        for i in range(15):
+            (tmp_path / f"file_{i:02d}.json").write_text("{}")
+        editor = JsonEditor()
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = f"e {tmp_path}/f"
+        editor._complete_path()
+        assert len(editor._tab_completions) == 15
+
+        # 다양한 폭에서 모든 tab_index 검증
+        for test_width in [40, 60, 80, 120]:
+            for tab_idx in range(-1, 15):
+                editor._tab_index = tab_idx
+                result = Text()
+                editor._render_wildmenu(result, Text.append, test_width)
+                rendered = result.plain
+                assert len(rendered) <= test_width, (
+                    f"width={test_width}, idx={tab_idx}: "
+                    f"rendered={len(rendered)} '{rendered}'"
+                )
+
+
 class TestDetectJsonl:
     """Tests for content-based JSONL detection."""
 

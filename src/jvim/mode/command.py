@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 
 class CommandMixin:
@@ -17,6 +19,8 @@ class CommandMixin:
             self._mode = EditorMode.NORMAL
             self.command_buffer = ""
             self._command_history_idx = -1
+            self._tab_completions = []
+            self._tab_index = -1
             self.status_msg = ""
             return
 
@@ -29,15 +33,20 @@ class CommandMixin:
                 self._mode = EditorMode.NORMAL
             self.command_buffer = ""
             self._command_history_idx = -1
+            self._tab_completions = []
+            self._tab_index = -1
             return
 
         if key == "backspace":
             if self.command_buffer:
                 self.command_buffer = self.command_buffer[:-1]
                 self._command_history_idx = -1
+                self._refresh_completions()
             else:
                 self._mode = EditorMode.NORMAL
                 self._command_history_idx = -1
+                self._tab_completions = []
+                self._tab_index = -1
             return
 
         # History navigation
@@ -47,6 +56,14 @@ class CommandMixin:
         if key == "down":
             self._command_history_next()
             return
+
+        if key == "tab":
+            self._complete_path()
+            return
+
+        # 다른 키 입력 시 후보 목록 클리어
+        self._tab_completions = []
+        self._tab_index = -1
 
         if char and char.isprintable():
             self.command_buffer += char
@@ -78,6 +95,102 @@ class CommandMixin:
         elif self._command_history_idx == 0:
             self._command_history_idx = -1
             self.command_buffer = ""
+
+    def _complete_path(self) -> None:
+        """Tab 키로 :e, :w 명령의 파일 경로 자동완성.
+
+        첫 Tab: 단일 매칭이면 즉시 완성, 복수면 공통 접두사 + 후보 표시.
+        이후 Tab: 후보를 하나씩 순회하며 command buffer에 반영.
+        """
+        # 이미 후보가 있으면 다음 후보로 순회
+        if self._tab_completions:
+            self._tab_index = (self._tab_index + 1) % len(self._tab_completions)
+            self._apply_tab_selection()
+            return
+
+        parts = self.command_buffer.split(None, 1)
+        verb = parts[0] if parts else ""
+        if verb not in ("e", "w"):
+            return
+
+        partial = parts[1] if len(parts) > 1 else ""
+        candidates = self._list_path_candidates(partial)
+        if not candidates:
+            return
+
+        if len(candidates) == 1:
+            # 단일 매칭: 즉시 완성
+            self._set_completion(verb, candidates[0])
+        else:
+            # 복수 매칭: 공통 접두사까지 완성 + 후보 저장
+            self._tab_completions = [self._candidate_display(c) for c in candidates]
+            self._tab_base_dir = str(candidates[0].parent)
+            self._tab_verb = verb
+            self._tab_index = -1
+            names = [c.name for c in candidates]
+            common = os.path.commonprefix(names)
+            prefix = Path(partial).name if partial and not partial.endswith("/") else ""
+            if common and len(common) > len(prefix):
+                completed = str(candidates[0].parent / common)
+                self.command_buffer = f"{verb} {completed}"
+
+    def _list_path_candidates(self, partial: str) -> list[Path]:
+        """partial 경로에 매칭되는 후보 목록 반환."""
+        p = Path(partial).expanduser() if partial else Path(".")
+        if partial and partial.endswith("/"):
+            parent, prefix = p, ""
+        elif partial:
+            parent, prefix = p.parent, p.name
+        else:
+            parent, prefix = Path("."), ""
+        if not parent.is_dir():
+            return []
+        try:
+            return [
+                entry
+                for entry in sorted(parent.iterdir())
+                if not entry.name.startswith(".") and entry.name.startswith(prefix)
+            ]
+        except PermissionError:
+            return []
+
+    @staticmethod
+    def _candidate_display(entry: Path) -> str:
+        return entry.name + "/" if entry.is_dir() else entry.name
+
+    def _set_completion(self, verb: str, entry: Path) -> None:
+        """단일 후보를 command buffer에 반영."""
+        completed = str(entry)
+        if entry.is_dir():
+            completed += "/"
+        self.command_buffer = f"{verb} {completed}"
+
+    def _apply_tab_selection(self) -> None:
+        """현재 _tab_index의 후보를 command buffer에 반영."""
+        name = self._tab_completions[self._tab_index]
+        path = str(Path(self._tab_base_dir) / name)
+        self.command_buffer = f"{self._tab_verb} {path}"
+
+    def _refresh_completions(self) -> None:
+        """command_buffer 변경 후 후보 목록 재필터링."""
+        if not self._tab_completions:
+            return
+        parts = self.command_buffer.split(None, 1)
+        verb = parts[0] if parts else ""
+        if verb not in ("e", "w"):
+            self._tab_completions = []
+            self._tab_index = -1
+            return
+        partial = parts[1] if len(parts) > 1 else ""
+        candidates = self._list_path_candidates(partial)
+        if not candidates:
+            self._tab_completions = []
+            self._tab_index = -1
+            return
+        self._tab_completions = [self._candidate_display(c) for c in candidates]
+        self._tab_base_dir = str(candidates[0].parent)
+        self._tab_verb = verb
+        self._tab_index = -1
 
     def _exec_command(self, cmd: str) -> None:
         stripped = cmd.strip()

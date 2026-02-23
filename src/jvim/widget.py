@@ -171,6 +171,9 @@ class JsonEditor(
         self._visual_anchor_row: int = 0  # 선택 시작 row
         self._visual_anchor_col: int = 0  # 선택 시작 col (v 모드용)
         self._yank_type: str = "line"  # "line" | "char" — paste 동작 결정
+        # Tab 자동완성 상태
+        self._tab_completions: list[str] = []
+        self._tab_index: int = -1  # -1: 공통 접두사, 0+: 후보 순회 중
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
@@ -668,34 +671,37 @@ class JsonEditor(
                 result_append(result, tilde_line, style="dim blue")
                 rows_used += 1
 
-        # status bar
+        # status bar (wildmenu: 후보 목록이 있으면 status bar를 대체)
         mode = self._mode
-        if self._visual_mode:
-            mode_label = " VISUAL LINE " if self._visual_mode == "V" else " VISUAL "
-            mode_style = "bold white on dark_orange"
+        if self._tab_completions and mode == EditorMode.COMMAND:
+            self._render_wildmenu(result, result_append, width)
         else:
-            mode_label = f" {mode.name} "
-            mode_style = self._MODE_STYLE[mode]
-        result_append(result, mode_label, style=mode_style)
+            if self._visual_mode:
+                mode_label = " VISUAL LINE " if self._visual_mode == "V" else " VISUAL "
+                mode_style = "bold white on dark_orange"
+            else:
+                mode_label = f" {mode.name} "
+                mode_style = self._MODE_STYLE[mode]
+            result_append(result, mode_label, style=mode_style)
 
-        read_only = self.read_only
-        if read_only:
-            result_append(result, " RO ", style="bold white on grey37")
+            read_only = self.read_only
+            if read_only:
+                result_append(result, " RO ", style="bold white on grey37")
 
-        pending = self.pending
-        if pending:
-            result_append(result, f"  {pending}", style="bold yellow")
+            pending = self.pending
+            if pending:
+                result_append(result, f"  {pending}", style="bold yellow")
 
-        status_msg = self.status_msg
-        pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
-        ro_len = 4 if read_only else 0
-        spacer_len = max(
-            0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4
-        )
-        result_append(result, f"  {status_msg}")
-        if spacer_len:
-            result_append(result, " " * spacer_len)
-        result_append(result, pos, style="bold")
+            status_msg = self.status_msg
+            pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
+            ro_len = 4 if read_only else 0
+            spacer_len = max(
+                0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4
+            )
+            result_append(result, f"  {status_msg}")
+            if spacer_len:
+                result_append(result, " " * spacer_len)
+            result_append(result, pos, style="bold")
 
         if mode == EditorMode.COMMAND:
             result_append(result, f"\n:{self.command_buffer}", style="bold yellow")
@@ -710,6 +716,98 @@ class JsonEditor(
             result_append(result, "\n")
 
         return result
+
+    # -- Wildmenu rendering ------------------------------------------------
+
+    def _render_wildmenu(self, result: Text, result_append, width: int) -> None:
+        """Tab 자동완성 후보를 status bar 영역에 wildmenu 스타일로 렌더링."""
+        comps = self._tab_completions
+        idx = self._tab_index
+        n = len(comps)
+
+        # 선택 항목이 보이도록 표시 윈도우 결정
+        start = 0
+        end = n
+        if idx >= 0:
+            # 선택 항목을 포함하면서 왼쪽으로 확장
+            start = idx
+            w = len(comps[idx])
+            # 오른쪽에 더 있을 수 있으므로 " >" 2칸 예약
+            if idx < n - 1:
+                w += 2
+            while start > 0:
+                prev_w = 2 + len(comps[start - 1])
+                # 왼쪽에 더 남으면 "< " + "  " = 4칸 예약
+                reserve = 4 if (start - 1) > 0 else 0
+                if w + prev_w + reserve > width:
+                    break
+                w += prev_w
+                start -= 1
+
+        # start부터 오른쪽으로 width에 맞게 end 결정
+        has_left = start > 0
+        budget = width
+        if has_left:
+            budget -= 4  # "< " + "  " 최소 공간
+        acc = 0
+        end = start
+        for i in range(start, n):
+            item_w = len(comps[i]) + (2 if i > start else 0)
+            # 이 아이템 뒤에 더 있으면 " >" 2칸 예약
+            right_reserve = 2 if (i + 1) < n else 0
+            if acc + item_w + right_reserve > budget:
+                break
+            acc += item_w
+            end = i + 1
+        has_right = end < n
+
+        # 렌더링
+        used = 0
+        # 왼쪽 overflow
+        if has_left:
+            result_append(result, "< ", style="bold yellow on grey23")
+            used += 2
+            prev_name = comps[start - 1]
+            avail = budget - acc - (2 if has_right else 0)  # " >" 공간 확보
+            if avail >= len(prev_name):
+                result_append(result, prev_name, style="dim on grey23")
+                used += len(prev_name)
+            elif avail >= 2:
+                result_append(result, prev_name[: avail - 1] + "\u2026", style="dim on grey23")
+                used += avail
+            result_append(result, "  ", style="on grey23")
+            used += 2
+
+        # 메인 항목
+        for i in range(start, end):
+            if i > start:
+                result_append(result, "  ", style="on grey23")
+                used += 2
+            style = "bold black on white" if i == idx else "bold on grey23"
+            result_append(result, comps[i], style=style)
+            used += len(comps[i])
+
+        # 오른쪽 overflow
+        remaining = width - used
+        if has_right and remaining >= 2:
+            if remaining > 4:
+                result_append(result, "  ", style="on grey23")
+                remaining -= 2
+                next_name = comps[end]
+                avail = remaining - 2  # " >" 예약
+                if avail >= len(next_name):
+                    result_append(result, next_name, style="dim on grey23")
+                    remaining -= len(next_name)
+                elif avail >= 2:
+                    result_append(result, next_name[: avail - 1] + "\u2026", style="dim on grey23")
+                    remaining -= avail
+            result_append(result, " " * max(0, remaining - 1), style="on grey23")
+            result_append(result, ">", style="bold yellow on grey23")
+            remaining = 0
+
+        # 남은 공간 패딩
+        if remaining > 0:
+            result_append(result, " " * remaining, style="on grey23")
 
     # -- Syntax colouring helpers ------------------------------------------
 
