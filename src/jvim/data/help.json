@@ -6,7 +6,10 @@
         "gg G": "file start/end",
         "%": "jump to matching bracket",
         "PgUp PgDn": "page up/down",
-        "Ctrl+d/u": "half page down/up"
+        "Ctrl+d/u": "half page down/up",
+        "Ctrl+f/b": "page down/up",
+        "Ctrl+e/y": "scroll down/up (1 line)",
+        "Ctrl+g": "show file info"
     },
     "Search": {
         "/": "search forward",
@@ -15,17 +18,20 @@
         "N": "previous match",
         "Up/Down": "search history",
         "\\c \\C": "case insensitive/sensitive",
+        "smartcase": "lowercase only → case insensitive",
         "/$. /$[": "JSONPath search (auto-detect)",
         "\\j": "JSONPath suffix for other patterns"
     },
     "Insert Mode": {
         "i I": "insert at cursor/line start",
         "a A": "append after cursor/line end",
-        "o O": "open line below/above"
+        "o O": "open line below/above",
+        "Tab": "indent (4 spaces)"
     },
     "Editing": {
         "x": "delete char",
         "dd": "delete line",
+        "d0": "delete to line start",
         "dw d$": "delete word/to end",
         "cw cc": "change word/line",
         "r{c}": "replace char",
@@ -53,8 +59,11 @@
     },
     "Commands": {
         ":w": "save",
+        ":w!": "force save (skip validation)",
         ":w {file}": "save as",
         ":e {file}": "open file",
+        ":<num>": "jump to line/record",
+        ":$": "jump to last line",
         ":fmt": "format JSON",
         ":s/old/new/": "substitute first match (current line)",
         ":s/old/new/g": "substitute all matches (current line)",
@@ -65,6 +74,9 @@
         ":q": "quit (confirm if changed)",
         ":q!": "quit (discard changes)",
         ":wq": "save and quit",
-        ":help": "toggle this help"
+        ":wq!": "force save and quit",
+        ":x": "save and quit (alias for :wq)",
+        ":help": "toggle this help",
+        "Tab": "path completion for :e, :w"
     }
 }

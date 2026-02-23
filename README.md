@@ -25,6 +25,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **Bracket matching** - Jump to matching brackets with `%`
 - **Undo/Redo** - Full undo history
 - **Substitute** - Vim-style `:s/old/new/g` with regex, range, and flags support
+- **Diff viewer** - Side-by-side JSON comparison with scroll/fold sync
 
 ## Installation
 
@@ -223,6 +224,35 @@ When the find pattern starts with `$.` or `$[`, substitute operates on JSON stru
 ```
 
 Replacement values are auto-detected: numbers (`42`), booleans (`true`/`false`), `null` stay as-is; everything else is JSON-encoded as a string.
+
+## Diff Viewer
+
+jvim includes a side-by-side diff viewer for comparing two JSON files.
+
+### Usage
+
+```bash
+# Compare two JSON files
+jvimdiff file1.json file2.json
+
+# Skip JSON normalization (compare raw text)
+jvimdiff --no-normalize file1.json file2.json
+
+# Compare JSONL files (auto-detected for .jsonl extension)
+jvimdiff --jsonl file1.json file2.json
+```
+
+Also available as `jvd` shortcut.
+
+### Features
+
+- **Color-coded diff** - Deletions (red), insertions (green), and replacements (gray) are highlighted
+- **Scroll sync** - Both panels scroll together
+- **Fold sync** - Folding/unfolding in one panel is mirrored to the other
+- **Auto-fold** - On load, all structure is folded, then only diff sections are unfolded
+- **Hunk navigation** - `]c` next hunk, `[c` previous hunk (wraps around)
+- **Panel switch** - `Tab` to toggle focus between left and right panels
+- **Embedded JSON diff** - `ej` to diff embedded JSON strings within each panel
 
 ## Keybindings
 
