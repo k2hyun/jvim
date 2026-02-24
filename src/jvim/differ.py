@@ -18,7 +18,7 @@ from rich.text import Text
 from .action.jsonpath import jsonpath_find
 from .diff import DiffHunk, DiffTag, compute_json_diff
 from .editor import _detect_jsonl
-from .widget import JsonEditor
+from .widget import EditorMode, JsonEditor
 
 _KEY_RE = re.compile(r'^"([^"]+)"\s*:')
 
@@ -116,13 +116,29 @@ class SyncJsonEditor(JsonEditor):
         super()._unfold_all()
         self._sync_folds_to_target()
 
+    def on_key(self, event) -> None:
+        """Tab 키는 앱의 패널 전환 핸들러로 직접 전달."""
+        if event.key == "tab" and self._mode == EditorMode.NORMAL:
+            event.prevent_default()
+            event.stop()
+            self.app.key_tab()
+            return
+        super().on_key(event)
+
     def render(self) -> Text:
         if not self.has_focus and self._sync_target is not None:
             self._scroll_top = self._sync_target._scroll_top
+            self.cursor_row = self._sync_target.cursor_row
         result = super().render()
         if self.has_focus and self._sync_target is not None:
+            changed = False
             if self._sync_target._scroll_top != self._scroll_top:
                 self._sync_target._scroll_top = self._scroll_top
+                changed = True
+            if self._sync_target.cursor_row != self.cursor_row:
+                self._sync_target.cursor_row = self.cursor_row
+                changed = True
+            if changed:
                 self._sync_target.refresh()
         return result
 
