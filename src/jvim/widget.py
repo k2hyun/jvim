@@ -94,6 +94,10 @@ class JsonEditor(
         pass
 
     @dataclass
+    class FileNavigateRequested(Message):
+        action: str  # "next", "prev", "alternate"
+
+    @dataclass
     class EmbeddedEditRequested(Message):
         content: str  # Parsed JSON content to edit
         source_row: int  # Row of the string value
@@ -773,7 +777,9 @@ class JsonEditor(
                 result_append(result, prev_name, style="dim on grey23")
                 used += len(prev_name)
             elif avail >= 2:
-                result_append(result, prev_name[: avail - 1] + "\u2026", style="dim on grey23")
+                result_append(
+                    result, prev_name[: avail - 1] + "\u2026", style="dim on grey23"
+                )
                 used += avail
             result_append(result, "  ", style="on grey23")
             used += 2
@@ -799,7 +805,9 @@ class JsonEditor(
                     result_append(result, next_name, style="dim on grey23")
                     remaining -= len(next_name)
                 elif avail >= 2:
-                    result_append(result, next_name[: avail - 1] + "\u2026", style="dim on grey23")
+                    result_append(
+                        result, next_name[: avail - 1] + "\u2026", style="dim on grey23"
+                    )
                     remaining -= avail
             result_append(result, " " * max(0, remaining - 1), style="on grey23")
             result_append(result, ">", style="bold yellow on grey23")

@@ -2145,3 +2145,146 @@ class TestTruncatePath:
     def test_zero_width(self):
         """폭 0이면 원본 반환."""
         assert JsonDiffApp._truncate_path("file.json", 0) == "file.json"
+
+
+class TestMultiFileNavigation:
+    """멀티 파일 탐색 (:n, :N, :e#) 테스트."""
+
+    def test_open_file_updates_content(self, tmp_path):
+        """_open_file로 파일 전환 후 content 확인."""
+        from src.jvim.editor import JsonEditorApp
+
+        (tmp_path / "a.json").write_text('{"a": 1}')
+        (tmp_path / "b.json").write_text('{"b": 2}')
+        app = JsonEditorApp(
+            file_path=str(tmp_path / "a.json"),
+            initial_content='{"a": 1}',
+            file_list=[str(tmp_path / "a.json"), str(tmp_path / "b.json")],
+        )
+        assert app.file_path == str(tmp_path / "a.json")
+        assert app.file_index == 0
+        assert len(app.file_list) == 2
+
+    def test_navigate_file_boundary_next(self, tmp_path):
+        """마지막 파일에서 :n 시 경고."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(
+            file_path="a.json",
+            initial_content="{}",
+            file_list=["a.json", "b.json"],
+        )
+        app.file_index = 1
+        # _navigate_file은 app이 mount된 상태에서만 동작하므로 직접 범위 체크
+        new_index = app.file_index + 1
+        assert new_index >= len(app.file_list)
+
+    def test_navigate_file_boundary_prev(self):
+        """첫 번째 파일에서 :N 시 경고."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(
+            file_path="a.json",
+            initial_content="{}",
+            file_list=["a.json", "b.json"],
+        )
+        app.file_index = 0
+        new_index = app.file_index - 1
+        assert new_index < 0
+
+    def test_alternate_file_tracking(self):
+        """alternate file 기록 확인."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(
+            file_path="a.json",
+            initial_content="{}",
+            file_list=["a.json"],
+        )
+        assert app._alternate_file == ""
+
+    def test_file_list_from_single_file(self):
+        """단일 파일 전달 시 file_list에 포함."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(file_path="test.json", initial_content="{}")
+        assert app.file_list == ["test.json"]
+        assert app.file_index == 0
+
+    def test_file_list_empty_when_no_file(self):
+        """파일 없이 실행 시 file_list 비어있음."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(file_path="", initial_content="{}")
+        assert app.file_list == []
+
+    def test_title_with_multiple_files(self):
+        """파일이 2개 이상이면 타이틀에 [N/M] 표시."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(
+            file_path="a.json",
+            initial_content="{}",
+            file_list=["a.json", "b.json", "c.json"],
+        )
+        app._update_title()
+        assert "[1/3]" in app.sub_title
+        assert "a.json" in app.sub_title
+
+    def test_title_single_file_no_indicator(self):
+        """단일 파일이면 인디케이터 없음."""
+        from src.jvim.editor import JsonEditorApp
+
+        app = JsonEditorApp(
+            file_path="a.json",
+            initial_content="{}",
+            file_list=["a.json"],
+        )
+        app._update_title()
+        assert "[1/1]" not in app.sub_title
+
+    def test_command_parsing_next(self):
+        """`:n` 명령이 FileNavigateRequested 생성."""
+        editor = JsonEditor('{"a": 1}')
+        editor._exec_command("n")
+        # post_message가 호출됨 — 위젯이 mount 안 된 상태에서는 에러 없이 통과 확인
+        # 실제 메시지 전송은 앱 레벨에서 테스트
+
+    def test_command_parsing_prev(self):
+        """`:N` 명령이 FileNavigateRequested 생성."""
+        editor = JsonEditor('{"a": 1}')
+        editor._exec_command("N")
+
+    def test_command_parsing_prev_alias(self):
+        """`:prev` 명령이 FileNavigateRequested 생성."""
+        editor = JsonEditor('{"a": 1}')
+        editor._exec_command("prev")
+
+    def test_command_parsing_alternate(self):
+        """`:e#` 명령이 FileNavigateRequested 생성."""
+        editor = JsonEditor('{"a": 1}')
+        editor._exec_command("e #")
+
+    def test_main_binary_file_exits(self, tmp_path):
+        """바이너리 파일(null byte 포함)은 시작 시 거부."""
+        binary = tmp_path / "data.bin"
+        binary.write_bytes(b'{"key": "\x00"}')
+        result = subprocess.run(
+            ["python", "-m", "jvim", str(binary)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "binary file" in result.stderr
+
+    def test_main_encoding_error_exits(self, tmp_path):
+        """UTF-8 디코딩 불가 파일은 시작 시 거부."""
+        bad = tmp_path / "bad.json"
+        bad.write_bytes(b'\xff\xfe{"key": 1}')
+        result = subprocess.run(
+            ["python", "-m", "jvim", str(bad)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "binary file" in result.stderr

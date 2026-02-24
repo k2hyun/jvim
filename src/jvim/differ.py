@@ -632,6 +632,17 @@ def main() -> None:
             print(f"jvimdiff: {f}: No such file", file=sys.stderr)
             sys.exit(1)
 
+    # 바이너리 파일 방어
+    for f in (args.file1, args.file2):
+        try:
+            content = Path(f).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            print(f"jvimdiff: binary file: {f}", file=sys.stderr)
+            sys.exit(1)
+        if "\x00" in content:
+            print(f"jvimdiff: binary file: {f}", file=sys.stderr)
+            sys.exit(1)
+
     # JSONL 자동 감지: 확장자 또는 내용 기반
     jsonl = args.jsonl
     if jsonl is None:

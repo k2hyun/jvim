@@ -726,3 +726,39 @@ class TestDiffFoldSync:
 
         JsonDiffApp._unfold_diff_regions(editor)
         assert 1 in editor._collapsed_strings
+
+
+class TestDiffBinaryFile:
+    """jvimdiff 바이너리 파일 방어 테스트."""
+
+    def test_binary_null_byte(self, tmp_path):
+        """null byte 포함 파일은 거부."""
+        import subprocess
+
+        f = tmp_path / "a.json"
+        f.write_bytes(b'{"key": "\x00"}')
+        b = tmp_path / "b.json"
+        b.write_text('{"key": "ok"}')
+        result = subprocess.run(
+            ["python", "-m", "jvim.differ", str(f), str(b)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "binary file" in result.stderr
+
+    def test_binary_encoding_error(self, tmp_path):
+        """UTF-8 디코딩 불가 파일은 거부."""
+        import subprocess
+
+        f = tmp_path / "a.json"
+        f.write_bytes(b'\xff\xfe{"key": 1}')
+        b = tmp_path / "b.json"
+        b.write_text('{"key": 1}')
+        result = subprocess.run(
+            ["python", "-m", "jvim.differ", str(f), str(b)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "binary file" in result.stderr

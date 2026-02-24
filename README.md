@@ -25,6 +25,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **Bracket matching** - Jump to matching brackets with `%`
 - **Undo/Redo** - Full undo history
 - **Substitute** - Vim-style `:s/old/new/g` with regex, range, and flags support
+- **Multi-file navigation** - Open multiple files and switch with `:n`, `:N`, `:e#`
 - **Diff viewer** - Side-by-side JSON comparison with scroll/fold sync
 
 ## Installation
@@ -38,6 +39,9 @@ pip install jvim
 ```bash
 # Open a file
 jvim data.json
+
+# Open multiple files
+jvim a.json b.json c.json
 
 # Open in read-only mode
 jvim -R data.json
@@ -224,6 +228,24 @@ When the find pattern starts with `$.` or `$[`, substitute operates on JSON stru
 ```
 
 Replacement values are auto-detected: numbers (`42`), booleans (`true`/`false`), `null` stay as-is; everything else is JSON-encoded as a string.
+
+## Multi-file Navigation
+
+Open multiple files and navigate between them using argument list commands:
+
+```bash
+jvim a.json b.json c.json
+```
+
+| Command | Description |
+|---------|-------------|
+| `:n` | Go to next file |
+| `:N` | Go to previous file |
+| `:e#` | Switch to alternate (previously opened) file |
+
+The title bar shows the current position in the file list: `a.json [1/3]`.
+
+Files opened with `:e <file>` are tracked as the alternate file, so you can switch back with `:e#`.
 
 ## Git Difftool Integration
 

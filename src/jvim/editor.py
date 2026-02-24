@@ -83,6 +83,7 @@ class JsonEditorApp(App):
         initial_content: str = "",
         read_only: bool = False,
         jsonl: bool = False,
+        file_list: list[str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -90,6 +91,10 @@ class JsonEditorApp(App):
         self.initial_content = initial_content
         self.read_only = read_only
         self.jsonl = jsonl
+        # Multi-file navigation
+        self.file_list: list[str] = file_list or ([file_path] if file_path else [])
+        self.file_index: int = 0
+        self._alternate_file: str = ""
         # Embedded edit state - stack of (row, col_start, col_end, parent_content, original_content)
         self._ej_stack: list[tuple[int, int, int, str, str]] = []
         self._main_was_read_only: bool = False
@@ -124,10 +129,58 @@ class JsonEditorApp(App):
 
     def _update_title(self) -> None:
         ro = " [RO]" if self.read_only else ""
+        idx = ""
+        if len(self.file_list) > 1:
+            idx = f" [{self.file_index + 1}/{len(self.file_list)}]"
         if self.file_path:
-            self.sub_title = self.file_path + ro
+            self.sub_title = self.file_path + ro + idx
         else:
             self.sub_title = "[new]" + ro
+
+    def _open_file(self, path: str) -> bool:
+        """파일 읽기 + 에디터 교체 공통 로직. 성공 시 True 반환."""
+        try:
+            content = Path(path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            self.notify(f"File not found: {path}", severity="error", timeout=6)
+            return False
+        except UnicodeDecodeError:
+            self.notify(f"Binary file: {path}", severity="error", timeout=6)
+            return False
+        except OSError as exc:
+            self.notify(f"Cannot open: {exc}", severity="error", timeout=6)
+            return False
+        if "\x00" in content:
+            self.notify(f"Binary file: {path}", severity="error", timeout=6)
+            return False
+
+        editor = self.query_one("#editor", JsonEditor)
+        self.jsonl = path.lower().endswith(".jsonl") or _detect_jsonl(content)
+        editor.jsonl = self.jsonl
+        editor.set_content(content)
+        prev_file = self.file_path
+        self.file_path = path
+        self._update_title()
+        self.notify(f"Opened: {path}", severity="information")
+        if prev_file and prev_file != path:
+            self._alternate_file = prev_file
+        return True
+
+    def _navigate_file(self, offset: int) -> None:
+        """:n(+1) / :N(-1) 처리. 범위 밖이면 notify."""
+        if not self.file_list:
+            self.notify("No file list", severity="warning")
+            return
+        new_index = self.file_index + offset
+        if new_index < 0:
+            self.notify("Already at first file", severity="warning")
+            return
+        if new_index >= len(self.file_list):
+            self.notify("Already at last file", severity="warning")
+            return
+        path = self.file_list[new_index]
+        if self._open_file(path):
+            self.file_index = new_index
 
     def _save_and_exit(self) -> None:
         """Save history and exit the app."""
@@ -269,23 +322,20 @@ class JsonEditorApp(App):
     def on_json_editor_file_open_requested(
         self, event: JsonEditor.FileOpenRequested
     ) -> None:
-        target = event.file_path
-        try:
-            content = Path(target).read_text(encoding="utf-8")
-        except FileNotFoundError:
-            self.notify(f"File not found: {target}", severity="error", timeout=6)
-            return
-        except OSError as exc:
-            self.notify(f"Cannot open: {exc}", severity="error", timeout=6)
-            return
+        self._open_file(event.file_path)
 
-        editor = self.query_one("#editor", JsonEditor)
-        self.jsonl = target.lower().endswith(".jsonl") or _detect_jsonl(content)
-        editor.jsonl = self.jsonl
-        editor.set_content(content)
-        self.file_path = target
-        self._update_title()
-        self.notify(f"Opened: {target}", severity="information")
+    def on_json_editor_file_navigate_requested(
+        self, event: JsonEditor.FileNavigateRequested
+    ) -> None:
+        if event.action == "next":
+            self._navigate_file(1)
+        elif event.action == "prev":
+            self._navigate_file(-1)
+        elif event.action == "alternate":
+            if not self._alternate_file:
+                self.notify("No alternate file", severity="warning")
+            else:
+                self._open_file(self._alternate_file)
 
     def on_json_editor_help_toggle_requested(self) -> None:
         help_panel = self.query_one("#help-panel")
@@ -391,9 +441,9 @@ def main() -> None:
     )
     parser.add_argument(
         "file",
-        nargs="?",
-        default="",
-        help="JSON file to open",
+        nargs="*",
+        default=[],
+        help="JSON file(s) to open",
     )
     parser.add_argument(
         "-R",
@@ -404,7 +454,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    file_path: str = args.file
+    file_list: list[str] = args.file
+    file_path: str = file_list[0] if file_list else ""
     initial_content: str = _load_data("sample.json")
     jsonl: bool = file_path.lower().endswith(".jsonl") if file_path else False
 
@@ -413,11 +464,17 @@ def main() -> None:
         try:
             if path.exists():
                 initial_content = path.read_text(encoding="utf-8")
+                if "\x00" in initial_content:
+                    print(f"jvim: binary file: {file_path}", file=sys.stderr)
+                    sys.exit(1)
                 if not jsonl:
                     jsonl = _detect_jsonl(initial_content)
             else:
                 # New file — start with empty object / empty line
                 initial_content = "" if jsonl else "{}"
+        except UnicodeDecodeError:
+            print(f"jvim: binary file: {file_path}", file=sys.stderr)
+            sys.exit(1)
         except PermissionError as exc:
             print(f"jvim: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -427,6 +484,7 @@ def main() -> None:
         initial_content=initial_content,
         read_only=args.read_only,
         jsonl=jsonl,
+        file_list=file_list,
     )
     app.run()
 

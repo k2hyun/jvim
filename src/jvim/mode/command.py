@@ -275,10 +275,16 @@ class CommandMixin:
                 self.FileSaveRequested(content=save, file_path=arg, quit_after=True)
             )
         elif verb == "e":
-            if not arg:
+            if arg == "#":
+                self.post_message(self.FileNavigateRequested(action="alternate"))
+            elif not arg:
                 self.status_msg = "Usage: :e <file>"
             else:
                 self.post_message(self.FileOpenRequested(file_path=arg))
+        elif verb == "n":
+            self.post_message(self.FileNavigateRequested(action="next"))
+        elif verb in ("N", "prev"):
+            self.post_message(self.FileNavigateRequested(action="prev"))
         elif verb in ("fmt", "format"):
             if self.read_only:
                 self.status_msg = "[readonly]"
