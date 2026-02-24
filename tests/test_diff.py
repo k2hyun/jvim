@@ -1311,3 +1311,53 @@ class TestDiffGutterLayout:
             left_prefix - right_prefix == editor._logical_width + 1
             or left_prefix > right_prefix
         )
+
+    def test_physical_line_map_jsonl(self):
+        """JSONL: 같은 레코드의 모든 줄이 같은 physical (원본 라인 번호)."""
+        editor = DiffEditor()
+        # record 1: lines 0-2, separator: line 3, record 2: lines 4-6
+        lines = ["{", '    "a": 1', "}", "", "{", '    "b": 2', "}"]
+        tags = [DiffTag.EQUAL] * 7
+        editor.set_diff_data(lines, tags, set(), [], jsonl=True)
+        # record 1 → physical 1, separator → 0, record 2 → physical 2
+        assert editor._physical_line_map == [1, 1, 1, 0, 2, 2, 2]
+
+    def test_physical_line_map_jsonl_with_fillers(self):
+        """JSONL + filler: filler 블록은 레코드 번호를 소비하지 않음."""
+        editor = DiffEditor()
+        # record 1: lines 0-2, sep: 3, filler block: 4-6, sep: 7, record 2: 8-10
+        lines = ["{", '    "a": 1', "}", "", "", "", "", "", "{", '    "c": 3', "}"]
+        tags = [
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,  # record 1
+            DiffTag.EQUAL,  # separator
+            DiffTag.INSERT,
+            DiffTag.INSERT,
+            DiffTag.INSERT,  # filler block
+            DiffTag.EQUAL,  # separator
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,  # record 2
+        ]
+        filler_rows = {4, 5, 6}
+        editor.set_diff_data(lines, tags, filler_rows, [], jsonl=True)
+        assert editor._physical_line_map[0] == 1  # record 1
+        assert editor._physical_line_map[1] == 1
+        assert editor._physical_line_map[2] == 1
+        assert editor._physical_line_map[3] == 0  # separator
+        assert editor._physical_line_map[4] == 0  # filler
+        assert editor._physical_line_map[5] == 0  # filler
+        assert editor._physical_line_map[6] == 0  # filler
+        assert editor._physical_line_map[7] == 0  # separator
+        assert editor._physical_line_map[8] == 2  # record 2
+        assert editor._physical_line_map[9] == 2
+        assert editor._physical_line_map[10] == 2
+
+    def test_physical_line_map_non_jsonl_unchanged(self):
+        """비-JSONL: 기존 순차 번호 방식 유지."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "", "}"]
+        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
+        editor.set_diff_data(lines, tags, {2}, [], jsonl=False)
+        assert editor._physical_line_map == [1, 2, 0, 3]

@@ -189,6 +189,7 @@ class DiffEditor(SyncJsonEditor):
         tags: list[DiffTag],
         filler_rows: set[int],
         hunks: list[DiffHunk],
+        jsonl: bool = False,
     ) -> None:
         """Diff 결과를 설정."""
         self.lines = lines if lines else [""]
@@ -203,17 +204,52 @@ class DiffEditor(SyncJsonEditor):
         self._folded_lines.clear()
         self._folded_lines_dirty = False
         self._folded_lines_folds_len = 0
-        # physical line map 구축 (filler=0, 나머지는 1-based)
-        physical = 0
-        self._physical_line_map = []
-        for i in range(len(self.lines)):
-            if i in self._filler_rows:
-                self._physical_line_map.append(0)
-            else:
-                physical += 1
-                self._physical_line_map.append(physical)
+        # physical line map 구축
+        if jsonl:
+            self._physical_line_map = self._build_jsonl_physical_map()
+        else:
+            physical = 0
+            self._physical_line_map = []
+            for i in range(len(self.lines)):
+                if i in self._filler_rows:
+                    self._physical_line_map.append(0)
+                else:
+                    physical += 1
+                    self._physical_line_map.append(physical)
         self._invalidate_caches()
         self.refresh()
+
+    def _build_jsonl_physical_map(self) -> list[int]:
+        """JSONL 레코드 기반 physical line map (원본 파일 라인 번호)."""
+        result = [0] * len(self.lines)
+        record_num = 0
+        in_block = False
+        block_has_content = False
+        block_start = 0
+        for i, line in enumerate(self.lines):
+            if line.strip():
+                if not in_block:
+                    in_block = True
+                    block_has_content = False
+                    block_start = i
+                if i not in self._filler_rows:
+                    block_has_content = True
+            else:
+                if in_block:
+                    if block_has_content:
+                        record_num += 1
+                    for j in range(block_start, i):
+                        if j not in self._filler_rows:
+                            result[j] = record_num
+                    in_block = False
+        # 마지막 블록 처리
+        if in_block:
+            if block_has_content:
+                record_num += 1
+            for j in range(block_start, len(self.lines)):
+                if j not in self._filler_rows:
+                    result[j] = record_num
+        return result
 
     def _line_background(self, line_idx: int) -> str:
         if line_idx in self._suppressed_lines:
@@ -687,12 +723,14 @@ class JsonDiffApp(App):
             diff_result.left_line_tags,
             left_fillers,
             diff_result.hunks,
+            jsonl=bool(jsonl),
         )
         right_editor.set_diff_data(
             diff_result.right_lines,
             diff_result.right_line_tags,
             right_fillers,
             diff_result.hunks,
+            jsonl=bool(jsonl),
         )
 
         # EJ 스택 초기화
