@@ -271,7 +271,7 @@ class DiffEditor(SyncJsonEditor):
                 )
                 if phy:
                     result_append(
-                        result, f"{phy:>{self._physical_width}} ", style="dim cyan"
+                        result, f"{phy:>{self._physical_width}} ", style="dim yellow"
                     )
                 else:
                     result_append(result, " " * (self._physical_width + 1))
