@@ -16,7 +16,12 @@ Screen {
 #left-title, #right-title {
     height: 1;
     padding: 0 1;
-    background: $accent;
+    background: #3a3a3a;
+    color: #808080;
+}
+#left-title.active, #right-title.active {
+    background: #005f87;
+    color: #ffffff;
 }
 #left-editor, #right-editor {
     height: 1fr;

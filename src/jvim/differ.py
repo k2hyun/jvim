@@ -549,8 +549,20 @@ class JsonDiffApp(App):
             return path
         return "\u2026" + path[-(available - 1) :]
 
+    def _apply_title_colors(self, active_side: str = "left") -> None:
+        """active/inactive 타이틀 CSS class 토글."""
+        for side in ("left", "right"):
+            title = self.query_one(f"#{side}-title", Static)
+            if side == active_side:
+                title.add_class("active")
+            else:
+                title.remove_class("active")
+
     def _update_titles(self) -> None:
         """패널 폭에 맞게 타이틀 경로 업데이트."""
+        focused = self.focused
+        fid = focused.id if focused else ""
+        active_side = "right" if fid and fid.startswith("right") else "left"
         indicator = ""
         if len(self.file_pairs) >= 2:
             indicator = f" [{self.pair_index + 1}/{len(self.file_pairs)}]"
@@ -558,10 +570,10 @@ class JsonDiffApp(App):
             display = path if path else "(empty)"
             title = self.query_one(f"#{side}-title", Static)
             w = title.size.width
-            # indicator 길이를 고려하여 경로 잘라내기
             avail = w - len(indicator) if w > 0 else 0
             truncated = self._truncate_path(display, avail) if avail > 0 else display
             title.update(f"[b]{truncated}{indicator}[/b]")
+        self._apply_title_colors(active_side)
 
     @staticmethod
     def _unfold_diff_regions(editor: DiffEditor) -> None:
@@ -699,6 +711,15 @@ class JsonDiffApp(App):
         right_ej._show_line_number = False
 
         left_editor.focus()
+
+    def on_descendant_focus(self, event) -> None:
+        # event.widget이 새로 포커스를 받은 위젯
+        fid = event.widget.id if event.widget else ""
+        if fid and fid.startswith("right"):
+            active_side = "right"
+        else:
+            active_side = "left"
+        self._apply_title_colors(active_side)
 
     def on_json_editor_quit(self, event: JsonEditor.Quit) -> None:
         focused = self.focused
@@ -947,8 +968,10 @@ class JsonDiffApp(App):
         fid = focused.id if focused else ""
         if fid and fid.startswith("right"):
             self.query_one("#left-editor", DiffEditor).focus()
+            self._apply_title_colors("left")
         else:
             self.query_one("#right-editor", DiffEditor).focus()
+            self._apply_title_colors("right")
 
 
 def _install_difftool(global_flag: str = "--global", cwd: str | None = None) -> None:
