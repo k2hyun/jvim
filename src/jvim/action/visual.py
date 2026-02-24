@@ -53,6 +53,9 @@ class VisualMixin:
         else:
             self.lines[sr : er + 1] = [""]
             self._folds.clear()
+            self._folded_lines.clear()
+            self._folded_lines_dirty = False
+            self._folded_lines_folds_len = 0
             self._collapsed_strings.clear()
         self.cursor_row = min(sr, len(self.lines) - 1)
         self.cursor_col = 0

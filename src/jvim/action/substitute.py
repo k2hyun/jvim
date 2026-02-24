@@ -118,6 +118,9 @@ class SubstituteMixin:
                 if delta:
                     self._adjust_line_indices(end + 1, delta)
                 self._folds.clear()
+                self._folded_lines.clear()
+                self._folded_lines_dirty = False
+                self._folded_lines_folds_len = 0
                 self._collapsed_strings.clear()
             self.status_msg = f"{total_count} substitution(s)"
             self._invalidate_caches()

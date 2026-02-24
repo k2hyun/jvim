@@ -17,6 +17,7 @@ class FoldMixin:
                 ne = e + delta if e >= from_line else e
                 new_folds[ns] = ne
             self._folds = new_folds
+            self._folded_lines_dirty = True
             self._collapsed_strings = {
                 (i + delta if i >= from_line else i) for i in self._collapsed_strings
             }
@@ -37,6 +38,7 @@ class FoldMixin:
                 else:
                     new_folds[s] = e - abs_d
             self._folds = new_folds
+            self._folded_lines_dirty = True
             self._collapsed_strings = {
                 (i - abs_d if i >= del_end else i)
                 for i in self._collapsed_strings
@@ -92,12 +94,22 @@ class FoldMixin:
                 return rng
         return None
 
-    def _is_line_folded(self, line_idx: int) -> bool:
-        """fold 안에 숨겨진 라인인지 확인."""
+    def _rebuild_folded_set(self) -> None:
+        """_folds로부터 숨겨진 라인 세트 재구성."""
+        s = set()
         for start, end in self._folds.items():
-            if start < line_idx <= end:
-                return True
-        return False
+            for i in range(start + 1, end + 1):
+                s.add(i)
+        self._folded_lines = s
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = len(self._folds)
+
+    def _is_line_folded(self, line_idx: int) -> bool:
+        """fold 안에 숨겨진 라인인지 확인. O(1)."""
+        # dirty 플래그 또는 _folds 직접 변경 감지 (길이 불일치)
+        if self._folded_lines_dirty or len(self._folds) != self._folded_lines_folds_len:
+            self._rebuild_folded_set()
+        return line_idx in self._folded_lines
 
     def _next_visible_line(self, line_idx: int, direction: int = 1) -> int:
         """다음/이전 보이는 라인 인덱스 반환."""
@@ -123,6 +135,8 @@ class FoldMixin:
         to_remove = [s for s, e in self._folds.items() if s < line_idx <= e]
         for s in to_remove:
             del self._folds[s]
+        if to_remove:
+            self._folded_lines_dirty = True
 
     def _find_long_string_at(self, line_idx: int) -> tuple[int, int, int] | None:
         """라인에서 긴 string value를 찾는다.
@@ -152,14 +166,17 @@ class FoldMixin:
         """za: fold 토글."""
         if line_idx in self._folds:
             del self._folds[line_idx]
+            self._folded_lines_dirty = True
             return
         rng = self._find_foldable_at(line_idx)
         if rng:
             self._folds[rng[0]] = rng[1]
+            self._folded_lines_dirty = True
             return
         for start, end in list(self._folds.items()):
             if start < line_idx <= end:
                 del self._folds[start]
+                self._folded_lines_dirty = True
                 return
         if line_idx in self._collapsed_strings:
             self._collapsed_strings.discard(line_idx)
@@ -171,6 +188,7 @@ class FoldMixin:
         """zo: fold 열기."""
         if line_idx in self._folds:
             del self._folds[line_idx]
+            self._folded_lines_dirty = True
         self._collapsed_strings.discard(line_idx)
 
     def _close_fold(self, line_idx: int) -> None:
@@ -178,6 +196,7 @@ class FoldMixin:
         rng = self._find_foldable_at(line_idx)
         if rng:
             self._folds[rng[0]] = rng[1]
+            self._folded_lines_dirty = True
             return
         if self._find_long_string_at(line_idx):
             self._collapsed_strings.add(line_idx)
@@ -185,6 +204,7 @@ class FoldMixin:
         enclosing = self._find_enclosing_foldable(line_idx)
         if enclosing:
             self._folds[enclosing[0]] = enclosing[1]
+            self._folded_lines_dirty = True
             self.cursor_row = enclosing[0]
 
     def _fold_all(self) -> None:
@@ -201,10 +221,14 @@ class FoldMixin:
                 if self._find_long_string_at(i):
                     self._collapsed_strings.add(i)
                 i += 1
+        self._folded_lines_dirty = True
 
     def _unfold_all(self) -> None:
         """zR: 모든 fold 해제."""
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
         self._collapsed_strings.clear()
 
     def _fold_all_nested(self) -> None:
@@ -219,6 +243,7 @@ class FoldMixin:
                 self._collapsed_strings.add(i)
         if 0 in self._folds:
             del self._folds[0]
+        self._folded_lines_dirty = True
 
     def _fold_at_depth(self, depth: int) -> None:
         """지정된 depth의 foldable 블록과 긴 string을 접기."""
@@ -236,3 +261,4 @@ class FoldMixin:
                     self._folds[rng[0]] = rng[1]
                 elif self._find_long_string_at(i):
                     self._collapsed_strings.add(i)
+        self._folded_lines_dirty = True

@@ -1,5 +1,6 @@
 """Tests for JsonEditor widget."""
 
+import json
 import subprocess
 
 from src.jvim.differ import JsonDiffApp, _install_difftool, _uninstall_difftool
@@ -538,6 +539,140 @@ class TestJsonPathFilter:
         editor._execute_search()
 
         assert len(editor._search_matches) == 1
+
+
+class TestJsonPathPositionMapping:
+    """JSONPath 검색 시 경로 전체를 사용한 정확한 위치 매핑 테스트."""
+
+    def test_same_key_different_parent(self):
+        """동일 키가 다른 부모에 있을 때 올바른 위치 반환."""
+        data = {
+            "evaluate_response": {"id": "eval_1"},
+            "model_response": {"id": "model_1"},
+        }
+        editor = JsonEditor(json.dumps(data))
+        editor._search_buffer = "$.model_response.id"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 1
+        row, col_start, col_end = editor._search_matches[0]
+        # 매칭된 텍스트가 model_1이어야 함
+        matched = editor.lines[row][col_start:col_end]
+        assert "model_1" in matched
+
+    def test_same_key_different_parent_compact(self):
+        """컴팩트 JSON에서 동일 키의 위치가 경로별로 구분됨."""
+        editor = JsonEditor('{"a": {"id": 1}, "b": {"id": 2}}')
+        editor._search_buffer = "$.b.id"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 1
+        row, col_start, col_end = editor._search_matches[0]
+        assert editor.lines[row][col_start:col_end] == "2"
+
+    def test_array_index_compact_json(self):
+        """컴팩트 JSON에서 배열 인덱스 위치 찾기."""
+        editor = JsonEditor('{"items": [10, 20, 30]}')
+        editor._search_buffer = "$.items[1]"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 1
+        row, col_start, col_end = editor._search_matches[0]
+        assert editor.lines[row][col_start:col_end] == "20"
+
+    def test_array_object_element_compact(self):
+        """컴팩트 JSON 배열 내 객체의 특정 키 검색."""
+        editor = JsonEditor('[{"name": "Alice"}, {"name": "Bob"}]')
+        editor._search_buffer = "$[1].name"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 1
+        row, col_start, col_end = editor._search_matches[0]
+        assert editor.lines[row][col_start:col_end] == '"Bob"'
+
+    def test_nested_array_with_shared_key(self):
+        """중첩 배열에서 공유 키를 경로로 구분."""
+        data = {"groups": [{"members": [{"id": "a"}]}, {"members": [{"id": "b"}]}]}
+        editor = JsonEditor(json.dumps(data))
+        editor._search_buffer = "$.groups[1].members[0].id"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 1
+        row, col_start, col_end = editor._search_matches[0]
+        assert "b" in editor.lines[row][col_start:col_end]
+
+    def test_wildcard_returns_all_matches(self):
+        """[*] 와일드카드가 모든 요소를 반환."""
+        editor = JsonEditor('{"vals": [{"x": 1}, {"x": 2}, {"x": 3}]}')
+        editor._search_buffer = "$.vals[*].x"
+        editor._search_forward = True
+        editor._execute_search()
+        assert len(editor._search_matches) == 3
+        values = []
+        for row, cs, ce in editor._search_matches:
+            values.append(editor.lines[row][cs:ce])
+        assert values == ["1", "2", "3"]
+
+
+class TestPaste:
+    """Paste 이벤트 처리 테스트."""
+
+    def _paste_event(self, text):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            text=text, prevent_default=lambda: None, stop=lambda: None
+        )
+
+    def test_paste_in_search_mode(self):
+        editor = JsonEditor('{"a": 1}')
+        editor._mode = EditorMode.SEARCH
+        editor._search_buffer = "/"
+        editor.on_paste(self._paste_event("$.a"))
+        assert editor._search_buffer == "/$.a"
+
+    def test_paste_in_command_mode(self):
+        editor = JsonEditor('{"a": 1}')
+        editor._mode = EditorMode.COMMAND
+        editor.command_buffer = "ig "
+        editor.on_paste(self._paste_event("$.path"))
+        assert editor.command_buffer == "ig $.path"
+
+    def test_paste_strips_newlines_in_search(self):
+        editor = JsonEditor('{"a": 1}')
+        editor._mode = EditorMode.SEARCH
+        editor._search_buffer = ""
+        editor.on_paste(self._paste_event("line1\nline2"))
+        assert editor._search_buffer == "line1line2"
+
+    def test_paste_in_insert_mode(self):
+        editor = JsonEditor('{"a": 1}')
+        editor._mode = EditorMode.INSERT
+        editor.cursor_row = 0
+        editor.cursor_col = 0
+        editor.on_paste(self._paste_event("hello"))
+        assert editor.lines[0].startswith("hello")
+        assert editor.cursor_col == 5
+
+    def test_paste_multiline_in_insert_mode(self):
+        editor = JsonEditor('{"a": 1}')
+        editor._mode = EditorMode.INSERT
+        editor.cursor_row = 0
+        editor.cursor_col = 0
+        editor.on_paste(self._paste_event("line1\nline2\nline3"))
+        assert editor.lines[0] == "line1"
+        assert editor.lines[1] == "line2"
+        assert editor.lines[2].startswith("line3")
+        assert editor.cursor_row == 2
+
+    def test_paste_readonly_insert_no_change(self):
+        editor = JsonEditor('{"a": 1}', read_only=True)
+        editor._mode = EditorMode.INSERT
+        editor.cursor_row = 0
+        editor.cursor_col = 0
+        original = editor.lines[0]
+        editor.on_paste(self._paste_event("hello"))
+        assert editor.lines[0] == original
 
 
 class TestHistory:

@@ -81,5 +81,14 @@
         ":x": "save and quit (alias for :wq)",
         ":help": "toggle this help",
         "Tab": "path completion for :e, :w"
+    },
+    "Diff Commands": {
+        "]c": "next hunk",
+        "[c": "previous hunk",
+        ":ig <path>": "ignore JSONPath in diff highlight",
+        ":ig": "show ignored paths",
+        ":ig!": "clear all ignored paths",
+        ":uig <path>": "unignore JSONPath",
+        ":uig + Tab": "tab-complete from ignored list"
     }
 }

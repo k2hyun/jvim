@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -108,6 +109,15 @@ class JsonEditor(
     class EmbeddedEditSave(Message):
         content: str  # Updated JSON content
 
+    @dataclass
+    class IgnorePathRequested(Message):
+        path: str
+
+    @dataclass
+    class UnignorePathRequested(Message):
+        path: str = ""
+        clear_all: bool = False
+
     # -- Init --------------------------------------------------------------
 
     def __init__(
@@ -132,8 +142,8 @@ class JsonEditor(
         self.command_buffer: str = ""
         self.pending: str = ""
         self.status_msg: str = ""
-        self.undo_stack: list[tuple[list[str], int, int]] = []
-        self.redo_stack: list[tuple[list[str], int, int]] = []
+        self.undo_stack: deque[tuple[list[str], int, int]] = deque(maxlen=200)
+        self.redo_stack: deque[tuple[list[str], int, int]] = deque(maxlen=200)
         self.yank_buffer: list[str] = []
         self._scroll_top: int = 0
         self._dot_buffer: list[tuple[str, str | None]] = []
@@ -162,10 +172,14 @@ class JsonEditor(
         # Render caches
         self._style_cache: dict[int, list[str]] = {}
         self._cache_dirty: bool = False
+        self._cached_line_count: int = len(self.lines)
         self._jsonl_records_cache: list[int] | None = None
         self._char_width_cache: dict[str, int] = {}
         # Fold state
         self._folds: dict[int, int] = {}  # {fold_header_line: fold_end_line}
+        self._folded_lines: set[int] = set()  # _is_line_folded() O(1) 캐시
+        self._folded_lines_dirty: bool = False
+        self._folded_lines_folds_len: int = 0
         self._collapsed_strings: set[int] = set()  # 접힌 긴 string 라인
         self._string_collapse_threshold: int = (
             60  # 이 길이 이상의 string value를 접기 대상으로
@@ -178,6 +192,8 @@ class JsonEditor(
         # Tab 자동완성 상태
         self._tab_completions: list[str] = []
         self._tab_index: int = -1  # -1: 공통 접두사, 0+: 후보 순회 중
+        # _ensure_cursor_visible 조기 종료 캐시
+        self._last_ecv_state: tuple | None = None
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
@@ -188,6 +204,7 @@ class JsonEditor(
     def _invalidate_caches(self) -> None:
         """Invalidate render caches when content changes."""
         self._cache_dirty = True
+        self._last_ecv_state = None
 
     def _check_readonly(self) -> bool:
         """Check if read-only and set status. Returns True if read-only."""
@@ -223,8 +240,6 @@ class JsonEditor(
 
     def _save_undo(self) -> None:
         self.undo_stack.append((self.lines[:], self.cursor_row, self.cursor_col))
-        if len(self.undo_stack) > 200:
-            self.undo_stack.pop(0)
         # Clear redo stack on new edit
         if self.redo_stack:
             self.redo_stack.clear()
@@ -254,6 +269,7 @@ class JsonEditor(
             max_here = max(0, line_len_here - 1) if line_len_here else 0
             if self.cursor_col > max_here:
                 del self._folds[row]
+                self._folded_lines_dirty = True
         line_len = len(self.lines[self.cursor_row])
         if self._mode == EditorMode.NORMAL:
             max_col = max(0, line_len - 1) if line_len else 0
@@ -330,17 +346,49 @@ class JsonEditor(
         ln_width = max(3, len(str(len(self.lines))))
         if not self.jsonl:
             return ln_width, 0, ln_width + 1
-        rec_count = 0
-        in_block = False
-        for line in self.lines:
-            if line.strip():
-                if not in_block:
-                    rec_count += 1
-                    in_block = True
-            else:
-                in_block = False
+        # 캐시가 있으면 max() 활용, 없으면 라인 순회 fallback
+        cache = self._jsonl_records_cache
+        if cache:
+            rec_count = max(cache)
+        else:
+            rec_count = 0
+            in_block = False
+            for line in self.lines:
+                if line.strip():
+                    if not in_block:
+                        rec_count += 1
+                        in_block = True
+                else:
+                    in_block = False
         rec_width = max(2, len(str(max(1, rec_count))))
         return ln_width, rec_width, rec_width + 1 + ln_width + 1
+
+    def _render_gutter(
+        self,
+        line_idx,
+        si,
+        rows_used,
+        jsonl_records,
+        prefix_w,
+        ln_width,
+        rec_width,
+        result,
+        result_append,
+        gutter_pad,
+    ):
+        """거터 렌더링 (라인 번호 + JSONL 레코드 번호)."""
+        if si == 0 or rows_used == 0:
+            result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
+            if rec_width:
+                rec_num = jsonl_records[line_idx]
+                if rec_num:
+                    result_append(
+                        result, f"{rec_num:>{rec_width}} ", style="dim yellow"
+                    )
+                else:
+                    result_append(result, " " * (rec_width + 1))
+        else:
+            result_append(result, gutter_pad)
 
     def _jsonl_line_records(self) -> list[int]:
         """Map each editor line to its JSONL record number.
@@ -365,6 +413,15 @@ class JsonEditor(
         return max(1, self.content_region.height - 2)
 
     def _ensure_cursor_visible(self, avail: int) -> None:
+        state = (
+            self.cursor_row,
+            self.cursor_col,
+            self._scroll_top,
+            avail,
+            len(self.lines),
+        )
+        if state == self._last_ecv_state:
+            return
         base_vh = self._visible_height()
         jsonl_records = self._jsonl_records_cache if self.jsonl else None
 
@@ -392,6 +449,13 @@ class JsonEditor(
                 rows_before -= wrap_rows(lines[self._scroll_top], avail)
             self._scroll_top += 1
             vh = _effective_vh(self._scroll_top)
+        self._last_ecv_state = (
+            self.cursor_row,
+            self.cursor_col,
+            self._scroll_top,
+            avail,
+            len(self.lines),
+        )
 
     def _scroll_cursor_to_top(self) -> None:
         """Position viewport so cursor is at the top of the screen."""
@@ -408,6 +472,10 @@ class JsonEditor(
     def get_content(self) -> str:
         return "\n".join(self.lines)
 
+    def _get_parseable_content(self) -> str:
+        """JSON 파싱용 콘텐츠 반환. DiffEditor에서 filler 행 제외하도록 오버라이드."""
+        return self.get_content()
+
     def set_content(self, content: str) -> None:
         if self.jsonl and content:
             content = self._jsonl_to_pretty(content)
@@ -415,6 +483,9 @@ class JsonEditor(
         self.cursor_row = 0
         self.cursor_col = 0
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
         self._collapsed_strings.clear()
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
@@ -453,20 +524,35 @@ class JsonEditor(
 
         # Flush caches when content changed
         if self._cache_dirty:
-            self._style_cache.clear()
+            new_count = len(self.lines)
+            if new_count != self._cached_line_count:
+                # 행 수 변경 → 캐시 키(행 번호) 틀어짐, 전체 무효화
+                self._style_cache.clear()
+            else:
+                # 행 수 동일 → 변경된 행만 무효화
+                sc = self._style_cache
+                lines = self.lines
+                to_del = [
+                    k
+                    for k, v in sc.items()
+                    if k < new_count and len(v) != len(lines[k])
+                ]
+                for k in to_del:
+                    del sc[k]
+            self._cached_line_count = new_count
             self._jsonl_records_cache = None
             self._cache_dirty = False
 
         content_height = height - 2
-        ln_width, rec_width, prefix_w = self._gutter_widths()
-        avail = max(1, width - prefix_w)
-        # Use cached JSONL records
+        # JSONL 캐시를 _gutter_widths() 전에 구축 (rec_count 계산에 활용)
         if self.jsonl:
             if self._jsonl_records_cache is None:
                 self._jsonl_records_cache = self._jsonl_line_records()
             jsonl_records = self._jsonl_records_cache
         else:
             jsonl_records = None
+        ln_width, rec_width, prefix_w = self._gutter_widths()
+        avail = max(1, width - prefix_w)
 
         self._ensure_cursor_visible(avail)
 
@@ -607,21 +693,18 @@ class JsonEditor(
             for si, (s_start, s_end) in enumerate(segs):
                 if rows_used >= content_height:
                     break
-                # Line number on first segment, or first visible row (floating line number)
-                if si == 0 or rows_used == 0:
-                    result_append(
-                        result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan"
-                    )
-                    if rec_width:
-                        rec_num = jsonl_records[line_idx]
-                        if rec_num:
-                            result_append(
-                                result, f"{rec_num:>{rec_width}} ", style="dim yellow"
-                            )
-                        else:
-                            result_append(result, " " * (rec_width + 1))
-                else:
-                    result_append(result, gutter_pad)
+                self._render_gutter(
+                    line_idx,
+                    si,
+                    rows_used,
+                    jsonl_records,
+                    prefix_w,
+                    ln_width,
+                    rec_width,
+                    result,
+                    result_append,
+                    gutter_pad,
+                )
                 # Render segment — batch consecutive chars with same style
                 col = s_start
                 while col < s_end:
@@ -882,6 +965,39 @@ class JsonEditor(
     # Key handling
     # =====================================================================
 
+    def on_paste(self, event: events.Paste) -> None:
+        event.prevent_default()
+        event.stop()
+        text = event.text.replace("\r\n", "\n").replace("\r", "\n")
+        if self._mode == EditorMode.SEARCH:
+            # 개행 제거 후 검색 버퍼에 추가
+            self._search_buffer += text.replace("\n", "")
+            self._search_history_idx = -1
+        elif self._mode == EditorMode.COMMAND:
+            self.command_buffer += text.replace("\n", "")
+            self._command_history_idx = -1
+            self._refresh_completions()
+        elif self._mode == EditorMode.INSERT and not self.read_only:
+            self._save_undo()
+            paste_lines = text.split("\n")
+            line = self.lines[self.cursor_row]
+            if len(paste_lines) == 1:
+                self.lines[self.cursor_row] = (
+                    line[: self.cursor_col] + paste_lines[0] + line[self.cursor_col :]
+                )
+                self.cursor_col += len(paste_lines[0])
+            else:
+                after = line[self.cursor_col :]
+                self.lines[self.cursor_row] = line[: self.cursor_col] + paste_lines[0]
+                for j, pl in enumerate(paste_lines[1:], 1):
+                    self.lines.insert(self.cursor_row + j, pl)
+                self._adjust_line_indices(self.cursor_row + 1, len(paste_lines) - 1)
+                self.cursor_row += len(paste_lines) - 1
+                self.cursor_col = len(paste_lines[-1])
+                self.lines[self.cursor_row] += after
+        self._clamp_cursor()
+        self.refresh()
+
     def on_key(self, event: events.Key) -> None:
         event.prevent_default()
         event.stop()
@@ -944,6 +1060,8 @@ class JsonEditor(
             self.cursor_row = 0
             self.cursor_col = 0
             self._folds.clear()
+            self._folded_lines.clear()
+            self._folded_lines_dirty = False
             self._collapsed_strings.clear()
             self.status_msg = "formatted"
         except json.JSONDecodeError as e:
@@ -963,6 +1081,9 @@ class JsonEditor(
         self._save_undo()
         self.lines = "\n\n".join(formatted).split("\n")
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
         self._collapsed_strings.clear()
         self.cursor_row = 0
         self.cursor_col = 0
@@ -1113,6 +1234,9 @@ class JsonEditor(
         self.cursor_col = col
         self._visual_mode = ""
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
         self._collapsed_strings.clear()
         self._invalidate_caches()
         self.status_msg = "undone"
@@ -1129,6 +1253,9 @@ class JsonEditor(
         self.cursor_col = col
         self._visual_mode = ""
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
         self._collapsed_strings.clear()
         self._invalidate_caches()
         self.status_msg = "redone"

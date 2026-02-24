@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,9 +15,65 @@ from textual.widgets import Button, Header, Static
 
 from rich.text import Text
 
+from .action.jsonpath import jsonpath_find
 from .diff import DiffHunk, DiffTag, compute_json_diff
 from .editor import _detect_jsonl
 from .widget import JsonEditor
+
+_KEY_RE = re.compile(r'^"([^"]+)"\s*:')
+
+
+def _is_binary(path: Path) -> bool:
+    """바이너리 파일 여부 확인 (null byte 또는 UTF-8 디코딩 실패)."""
+    try:
+        content = path.read_text(encoding="utf-8")
+        return "\x00" in content
+    except (UnicodeDecodeError, OSError):
+        return True
+
+
+def _collect_file_pairs(left_dir: str, right_dir: str) -> list[tuple[str, str]]:
+    """두 디렉토리를 재귀 탐색하여 차이가 있는 파일 쌍 반환.
+
+    - 바이너리 파일 제외
+    - 동일한 파일 건너뛰기
+    - 한쪽에만 있는 파일은 없는 쪽을 빈 문자열로 표현
+    - 상대 경로 기준 알파벳 정렬
+    """
+    left_base, right_base = Path(left_dir), Path(right_dir)
+    left_files = {f.relative_to(left_base) for f in left_base.rglob("*") if f.is_file()}
+    right_files = {
+        f.relative_to(right_base) for f in right_base.rglob("*") if f.is_file()
+    }
+    all_paths = sorted(left_files | right_files)
+
+    pairs: list[tuple[str, str]] = []
+    for rel in all_paths:
+        lp = left_base / rel
+        rp = right_base / rel
+        l_exists = rel in left_files
+        r_exists = rel in right_files
+
+        # 바이너리 파일 제외
+        if l_exists and _is_binary(lp):
+            continue
+        if r_exists and _is_binary(rp):
+            continue
+
+        if l_exists and r_exists:
+            # 내용이 동일하면 건너뛰기
+            try:
+                if lp.read_text(encoding="utf-8") == rp.read_text(encoding="utf-8"):
+                    continue
+            except OSError:
+                continue
+            pairs.append((str(lp), str(rp)))
+        elif l_exists:
+            pairs.append((str(lp), ""))
+        else:
+            pairs.append(("", str(rp)))
+
+    return pairs
 
 
 class SyncJsonEditor(JsonEditor):
@@ -35,6 +92,7 @@ class SyncJsonEditor(JsonEditor):
         """fold 상태를 sync target에 복사."""
         if self._sync_target is not None:
             self._sync_target._folds = dict(self._folds)
+            self._sync_target._folded_lines_dirty = True
             self._sync_target._collapsed_strings = set(self._collapsed_strings)
             self._sync_target.refresh()
 
@@ -95,6 +153,35 @@ class DiffEditor(SyncJsonEditor):
         self._filler_rows: set[int] = set()
         self._diff_hunks: list[DiffHunk] = []
         self._current_hunk: int = -1
+        self._ignore_paths: list[str] = []
+        self._suppressed_lines: set[int] = set()
+        self._physical_line_map: list[int] = []
+        self._show_logical_line: bool = True
+        self._physical_width: int = 3
+        self._logical_width: int = 3
+
+    def _get_parseable_content(self) -> str:
+        """filler 행을 제외한 JSON 파싱용 콘텐츠."""
+        return "\n".join(
+            line for i, line in enumerate(self.lines) if i not in self._filler_rows
+        )
+
+    def _compute_block_start_lines(self) -> dict[int, int]:
+        """filler 행을 건너뛰는 JSONL 블록 시작 라인 계산."""
+        result: dict[int, int] = {}
+        block_idx = 0
+        in_block = False
+        for i, line in enumerate(self.lines):
+            if i in self._filler_rows:
+                continue
+            if line.strip():
+                if not in_block:
+                    result[block_idx] = i
+                    block_idx += 1
+                    in_block = True
+            else:
+                in_block = False
+        return result
 
     def set_diff_data(
         self,
@@ -113,16 +200,271 @@ class DiffEditor(SyncJsonEditor):
         self.cursor_col = 0
         self._scroll_top = 0
         self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
+        # physical line map 구축 (filler=0, 나머지는 1-based)
+        physical = 0
+        self._physical_line_map = []
+        for i in range(len(self.lines)):
+            if i in self._filler_rows:
+                self._physical_line_map.append(0)
+            else:
+                physical += 1
+                self._physical_line_map.append(physical)
         self._invalidate_caches()
         self.refresh()
 
     def _line_background(self, line_idx: int) -> str:
+        if line_idx in self._suppressed_lines:
+            return ""
         if line_idx < len(self._line_tags):
             tag = self._line_tags[line_idx]
             if line_idx in self._filler_rows:
                 return self._FILLER_BG
             return self._DIFF_BG.get(tag, "")
         return ""
+
+    def _gutter_widths(self) -> tuple[int, int, int]:
+        max_physical = max(1, len(self.lines) - len(self._filler_rows))
+        self._physical_width = max(3, len(str(max_physical)))
+        if self._show_logical_line:
+            self._logical_width = max(3, len(str(len(self.lines))))
+            prefix_w = self._logical_width + 1 + self._physical_width + 1
+        else:
+            self._logical_width = 0
+            prefix_w = self._physical_width + 1
+        return self._physical_width, 0, prefix_w
+
+    def _render_gutter(
+        self,
+        line_idx,
+        si,
+        rows_used,
+        jsonl_records,
+        prefix_w,
+        ln_width,
+        rec_width,
+        result,
+        result_append,
+        gutter_pad,
+    ):
+        if si == 0 or rows_used == 0:
+            is_filler = line_idx in self._filler_rows
+            if not self._show_logical_line and is_filler:
+                # 오른쪽 에디터 filler: 거터 전체 공백
+                result_append(result, " " * prefix_w)
+                return
+            if self._show_logical_line:
+                # 왼쪽: logical line number (항상 표시)
+                result_append(
+                    result, f"{line_idx + 1:>{self._logical_width}} ", style="dim cyan"
+                )
+            # physical line number (filler면 공백)
+            if is_filler:
+                result_append(result, " " * (self._physical_width + 1))
+            else:
+                phy = (
+                    self._physical_line_map[line_idx]
+                    if line_idx < len(self._physical_line_map)
+                    else 0
+                )
+                if phy:
+                    result_append(
+                        result, f"{phy:>{self._physical_width}} ", style="dim cyan"
+                    )
+                else:
+                    result_append(result, " " * (self._physical_width + 1))
+        else:
+            result_append(result, gutter_pad)
+
+    @staticmethod
+    def _build_line_paths(lines: list[str]) -> list[str]:
+        """indent 기반 스택으로 각 라인의 JSONPath 추적."""
+        result: list[str] = []
+        # 스택: (key_or_index, is_array) 쌍
+        stack: list[tuple[str, bool]] = []
+        # 각 depth의 배열 인덱스 카운터
+        array_indices: dict[int, int] = {}
+        key_re = _KEY_RE
+
+        for line in lines:
+            stripped = line.lstrip()
+            if not stripped:
+                result.append("")
+                continue
+
+            indent = len(line) - len(stripped)
+            depth = indent // 4
+
+            # 스택을 현재 depth까지 축소
+            while len(stack) > depth:
+                stack.pop()
+
+            # 키 추출: "key": ... 패턴
+            key_match = key_re.match(stripped)
+
+            if key_match:
+                key = key_match.group(1)
+                # 현재 depth에 스택 항목이 있으면 교체, 없으면 추가
+                if len(stack) > depth:
+                    stack[depth] = (key, False)
+                else:
+                    while len(stack) < depth:
+                        stack.append(("", False))
+                    stack.append((key, False))
+
+                # 경로 생성
+                path = "$"
+                for seg, is_arr in stack:
+                    if isinstance(seg, str) and seg.startswith("["):
+                        path += seg
+                    elif seg:
+                        path += f".{seg}"
+                result.append(path)
+
+                # 값이 { 또는 [로 시작하는 컨테이너인지 확인
+                after_colon = stripped[key_match.end() :].strip()
+                if after_colon.startswith("{"):
+                    # 다음 depth에서 오브젝트
+                    pass
+                elif after_colon.startswith("["):
+                    # 배열 시작 — 인덱스 카운터 초기화
+                    array_indices[depth + 1] = 0
+
+            elif stripped.startswith("{"):
+                # 배열 내부의 오브젝트 시작
+                parent_depth = depth - 1
+                if parent_depth >= 0 and parent_depth + 1 in array_indices:
+                    idx = array_indices[parent_depth + 1]
+                    idx_key = f"[{idx}]"
+                    if len(stack) > depth:
+                        stack[depth] = (idx_key, False)
+                    else:
+                        while len(stack) < depth:
+                            stack.append(("", False))
+                        stack.append((idx_key, False))
+
+                path = "$"
+                for seg, is_arr in stack:
+                    if isinstance(seg, str) and seg.startswith("["):
+                        path += seg
+                    elif seg:
+                        path += f".{seg}"
+                result.append(path)
+
+            elif stripped.startswith("}"):
+                # 오브젝트 종료
+                path = "$"
+                for seg, is_arr in stack:
+                    if isinstance(seg, str) and seg.startswith("["):
+                        path += seg
+                    elif seg:
+                        path += f".{seg}"
+                result.append(path)
+
+                # 배열 내부 오브젝트 종료 시 인덱스 증가
+                if depth in array_indices:
+                    pass
+                parent_depth = depth - 1
+                if parent_depth >= 0 and depth in array_indices:
+                    array_indices[depth] += 1
+
+            elif stripped.startswith("]"):
+                # 배열 종료
+                path = "$"
+                for seg, is_arr in stack:
+                    if isinstance(seg, str) and seg.startswith("["):
+                        path += seg
+                    elif seg:
+                        path += f".{seg}"
+                result.append(path)
+                # 인덱스 카운터 정리
+                array_indices.pop(depth + 1, None)
+
+            elif stripped.startswith("["):
+                # 최상위 배열 시작
+                array_indices[depth + 1] = 0
+                result.append("$")
+
+            else:
+                # 배열 내 프리미티브 값 등
+                path = "$"
+                for seg, is_arr in stack:
+                    if isinstance(seg, str) and seg.startswith("["):
+                        path += seg
+                    elif seg:
+                        path += f".{seg}"
+                result.append(path)
+
+        return result
+
+    def _update_suppressed_lines(self) -> None:
+        """ignore 패턴과 매칭하여 _suppressed_lines 갱신."""
+        self._suppressed_lines.clear()
+        if not self._ignore_paths:
+            return
+
+        line_paths = self._build_line_paths(self.lines)
+
+        # 동적 패턴(.. 또는 [*]) 분리 — jsonpath_find로 해석 필요
+        dynamic_patterns: list[str] = []
+        prefix_patterns: list[str] = []
+        for pat in self._ignore_paths:
+            if ".." in pat or "[*]" in pat:
+                dynamic_patterns.append(pat)
+            else:
+                prefix_patterns.append(pat)
+
+        # 동적 패턴: JSON 파싱 후 jsonpath_find로 매칭 경로 수집
+        resolved_prefixes: set[str] = set()
+        if dynamic_patterns:
+            content = self._get_parseable_content()
+            data_list: list[object] = []
+            try:
+                data_list.append(json.loads(content))
+            except json.JSONDecodeError as e:
+                if "Extra data" in e.msg:
+                    # JSONL: 각 블록을 개별 파싱
+                    for block in self._split_jsonl_blocks(content):
+                        try:
+                            data_list.append(json.loads(block))
+                        except json.JSONDecodeError:
+                            pass
+            for data in data_list:
+                for pat in dynamic_patterns:
+                    try:
+                        matched = jsonpath_find(data, pat)
+                    except ValueError:
+                        continue
+                    for path_parts in matched:
+                        p = "$"
+                        for seg in path_parts:
+                            if isinstance(seg, int):
+                                p += f"[{seg}]"
+                            else:
+                                p += f".{seg}"
+                        resolved_prefixes.add(p)
+
+        for i, lp in enumerate(line_paths):
+            if not lp:
+                continue
+            # filler 라인은 억제하지 않음
+            if i in self._filler_rows:
+                continue
+            # prefix 패턴: 정확 일치 또는 접두사 매칭
+            for pat in prefix_patterns:
+                if lp == pat or lp.startswith(pat + ".") or lp.startswith(pat + "["):
+                    self._suppressed_lines.add(i)
+                    break
+            else:
+                # 동적 패턴 매칭
+                for rp in resolved_prefixes:
+                    if lp == rp or lp.startswith(rp + ".") or lp.startswith(rp + "["):
+                        self._suppressed_lines.add(i)
+                        break
+
+        self.refresh()
 
     def _update_hunk_status(self) -> None:
         total = len(self._diff_hunks)
@@ -195,7 +537,8 @@ class JsonDiffApp(App):
         left_path: str,
         right_path: str,
         normalize: bool = True,
-        jsonl: bool = False,
+        jsonl: bool | None = False,
+        file_pairs: list[tuple[str, str]] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -203,6 +546,8 @@ class JsonDiffApp(App):
         self.right_path = right_path
         self.normalize = normalize
         self.jsonl = jsonl
+        self.file_pairs: list[tuple[str, str]] = file_pairs or []
+        self.pair_index: int = 0
         self._left_ej_stack: list[str] = []
         self._right_ej_stack: list[str] = []
 
@@ -237,11 +582,17 @@ class JsonDiffApp(App):
 
     def _update_titles(self) -> None:
         """패널 폭에 맞게 타이틀 경로 업데이트."""
+        indicator = ""
+        if len(self.file_pairs) >= 2:
+            indicator = f" [{self.pair_index + 1}/{len(self.file_pairs)}]"
         for side, path in (("left", self.left_path), ("right", self.right_path)):
+            display = path if path else "(empty)"
             title = self.query_one(f"#{side}-title", Static)
             w = title.size.width
-            truncated = self._truncate_path(path, w) if w > 0 else path
-            title.update(f"[b]{truncated}[/b]")
+            # indicator 길이를 고려하여 경로 잘라내기
+            avail = w - len(indicator) if w > 0 else 0
+            truncated = self._truncate_path(display, avail) if avail > 0 else display
+            title.update(f"[b]{truncated}{indicator}[/b]")
 
     @staticmethod
     def _unfold_diff_regions(editor: DiffEditor) -> None:
@@ -254,6 +605,8 @@ class JsonDiffApp(App):
                     break
         for s in to_remove:
             del editor._folds[s]
+        if to_remove:
+            editor._folded_lines_dirty = True
         # diff가 있는 collapsed string도 펼기
         to_expand = [
             i
@@ -266,35 +619,67 @@ class JsonDiffApp(App):
     def on_resize(self) -> None:
         self._update_titles()
 
-    def on_mount(self) -> None:
-        self._update_titles()
-        left_content = Path(self.left_path).read_text(encoding="utf-8")
-        right_content = Path(self.right_path).read_text(encoding="utf-8")
+    @staticmethod
+    def _detect_jsonl_for_pair(
+        left_path: str, right_path: str, left_content: str, right_content: str
+    ) -> bool:
+        """파일 쌍의 JSONL 여부를 확장자 + 내용 기반으로 판별."""
+        for p in (left_path, right_path):
+            if p and p.lower().endswith(".jsonl"):
+                return True
+        for content in (left_content, right_content):
+            if content and _detect_jsonl(content):
+                return True
+        return False
+
+    def _load_pair(self, index: int) -> None:
+        """파일 쌍을 로드하여 diff 계산 + 에디터 갱신."""
+        if self.file_pairs:
+            left_path, right_path = self.file_pairs[index]
+            self.pair_index = index
+            self.left_path = left_path
+            self.right_path = right_path
+
+        left_content = (
+            Path(self.left_path).read_text(encoding="utf-8") if self.left_path else ""
+        )
+        right_content = (
+            Path(self.right_path).read_text(encoding="utf-8") if self.right_path else ""
+        )
+
+        # 파일 쌍별 JSONL 자동 감지 (명시적 --jsonl 플래그가 없는 경우)
+        jsonl = self.jsonl
+        if jsonl is None:
+            jsonl = self._detect_jsonl_for_pair(
+                self.left_path, self.right_path, left_content, right_content
+            )
 
         diff_result = compute_json_diff(
             left_content,
             right_content,
             normalize=self.normalize,
-            jsonl=self.jsonl,
+            jsonl=jsonl,
         )
 
         left_editor = self.query_one("#left-editor", DiffEditor)
         right_editor = self.query_one("#right-editor", DiffEditor)
+        left_editor._show_logical_line = True
+        right_editor._show_logical_line = False
 
-        # filler 행 계산: 빈 문자열이고 EQUAL이 아닌 행
+        # filler 행 계산: 한쪽만 빈 정렬 패딩 (양쪽 모두 빈 JSONL separator 제외)
         left_fillers = {
             i
             for i, (line, tag) in enumerate(
                 zip(diff_result.left_lines, diff_result.left_line_tags)
             )
-            if not line and tag != DiffTag.EQUAL
+            if not line and tag != DiffTag.EQUAL and diff_result.right_lines[i]
         }
         right_fillers = {
             i
             for i, (line, tag) in enumerate(
                 zip(diff_result.right_lines, diff_result.right_line_tags)
             )
-            if not line and tag != DiffTag.EQUAL
+            if not line and tag != DiffTag.EQUAL and diff_result.left_lines[i]
         }
 
         left_editor.set_diff_data(
@@ -310,7 +695,29 @@ class JsonDiffApp(App):
             diff_result.hunks,
         )
 
+        # EJ 스택 초기화
+        self._left_ej_stack.clear()
+        self._right_ej_stack.clear()
+        self.query_one("#left-ej-panel").remove_class("visible")
+        self.query_one("#right-ej-panel").remove_class("visible")
+
+        # 모든 depth fold 후 diff 있는 부분만 unfold
+        left_editor._fold_all_nested()
+        self._unfold_diff_regions(left_editor)
+        right_editor._folds = dict(left_editor._folds)
+        right_editor._folded_lines_dirty = True
+        right_editor._collapsed_strings = set(left_editor._collapsed_strings)
+
+        left_editor._update_hunk_status()
+        right_editor._update_hunk_status()
+        self._update_titles()
+
+    def on_mount(self) -> None:
+        self._load_pair(0)
+
         # 렌더 타임 스크롤 동기화 설정
+        left_editor = self.query_one("#left-editor", DiffEditor)
+        right_editor = self.query_one("#right-editor", DiffEditor)
         left_editor._sync_target = right_editor
         right_editor._sync_target = left_editor
 
@@ -319,15 +726,9 @@ class JsonDiffApp(App):
         right_ej = self.query_one("#right-ej-editor", DiffEditor)
         left_ej._sync_target = right_ej
         right_ej._sync_target = left_ej
+        left_ej._show_logical_line = True
+        right_ej._show_logical_line = False
 
-        # 모든 depth fold 후 diff 있는 부분만 unfold
-        left_editor._fold_all_nested()
-        self._unfold_diff_regions(left_editor)
-        right_editor._folds = dict(left_editor._folds)
-        right_editor._collapsed_strings = set(left_editor._collapsed_strings)
-
-        left_editor._update_hunk_status()
-        right_editor._update_hunk_status()
         left_editor.focus()
 
     def on_json_editor_quit(self, event: JsonEditor.Quit) -> None:
@@ -347,6 +748,49 @@ class JsonDiffApp(App):
             self._close_ej_panel(side)
         else:
             self.exit()
+
+    def on_json_editor_ignore_path_requested(
+        self, event: JsonEditor.IgnorePathRequested
+    ) -> None:
+        """양쪽 에디터에 ignore 패턴 추가 + 갱신."""
+        for eid in ("left-editor", "right-editor"):
+            editor = self.query_one(f"#{eid}", DiffEditor)
+            if event.path not in editor._ignore_paths:
+                editor._ignore_paths.append(event.path)
+            editor._update_suppressed_lines()
+
+    def on_json_editor_unignore_path_requested(
+        self, event: JsonEditor.UnignorePathRequested
+    ) -> None:
+        """패턴 제거 + 갱신."""
+        for eid in ("left-editor", "right-editor"):
+            editor = self.query_one(f"#{eid}", DiffEditor)
+            if event.clear_all:
+                editor._ignore_paths.clear()
+            elif event.path in editor._ignore_paths:
+                editor._ignore_paths.remove(event.path)
+            editor._update_suppressed_lines()
+
+    def on_json_editor_file_navigate_requested(
+        self, event: JsonEditor.FileNavigateRequested
+    ) -> None:
+        """디렉토리 비교 시 :n / :N 으로 파일 쌍 전환."""
+        if not self.file_pairs or len(self.file_pairs) < 2:
+            left_editor = self.query_one("#left-editor", DiffEditor)
+            left_editor.status_msg = "No other files"
+            return
+        if event.action == "next":
+            new_idx = self.pair_index + 1
+            if new_idx >= len(self.file_pairs):
+                new_idx = 0
+        elif event.action == "prev":
+            new_idx = self.pair_index - 1
+            if new_idx < 0:
+                new_idx = len(self.file_pairs) - 1
+        else:
+            return
+        self._load_pair(new_idx)
+        self.query_one("#left-editor", DiffEditor).focus()
 
     def on_json_editor_embedded_edit_requested(
         self, event: JsonEditor.EmbeddedEditRequested
@@ -590,8 +1034,12 @@ def main() -> None:
         prog="jvimdiff",
         description="JSON diff viewer with vim-style keybindings",
     )
-    parser.add_argument("file1", nargs="?", default="", help="First JSON file")
-    parser.add_argument("file2", nargs="?", default="", help="Second JSON file")
+    parser.add_argument(
+        "file1", nargs="?", default="", help="First JSON file or directory"
+    )
+    parser.add_argument(
+        "file2", nargs="?", default="", help="Second JSON file or directory"
+    )
     parser.add_argument(
         "--no-normalize",
         action="store_true",
@@ -629,8 +1077,31 @@ def main() -> None:
 
     for f in (args.file1, args.file2):
         if not Path(f).exists():
-            print(f"jvimdiff: {f}: No such file", file=sys.stderr)
+            print(f"jvimdiff: {f}: No such file or directory", file=sys.stderr)
             sys.exit(1)
+
+    # 디렉토리 비교 모드
+    if Path(args.file1).is_dir() and Path(args.file2).is_dir():
+        file_pairs = _collect_file_pairs(args.file1, args.file2)
+        if not file_pairs:
+            print("No differences", file=sys.stderr)
+            sys.exit(0)
+        left_path, right_path = file_pairs[0]
+        # --jsonl 명시 시 True, 미지정 시 None → 파일별 자동 감지
+        jsonl = True if args.jsonl else None
+        app = JsonDiffApp(
+            left_path=left_path,
+            right_path=right_path,
+            normalize=not args.no_normalize,
+            jsonl=jsonl,
+            file_pairs=file_pairs,
+        )
+        app.run()
+        return
+
+    if Path(args.file1).is_dir() or Path(args.file2).is_dir():
+        print("jvimdiff: cannot compare file and directory", file=sys.stderr)
+        sys.exit(1)
 
     # 바이너리 파일 방어
     for f in (args.file1, args.file2):

@@ -144,10 +144,14 @@ class SearchMixin:
 
         jsonpath, op, filter_value = parse_jsonpath_filter(path)
 
-        content = self.get_content()
+        content = self._get_parseable_content()
         try:
             data = json.loads(content)
         except json.JSONDecodeError as e:
+            if "Extra data" in e.msg:
+                # JSONL 자동 폴백 (DiffEditor에서 JSONL 콘텐츠일 때)
+                self._execute_jsonpath_search_jsonl(path)
+                return
             self.status_msg = f"Invalid JSON: {e.msg} (line {e.lineno})"
             return
 
@@ -192,7 +196,7 @@ class SearchMixin:
         """Execute JSONPath search across JSONL records."""
         jsonpath, op, filter_value = parse_jsonpath_filter(path)
 
-        blocks = self._split_jsonl_blocks(self.get_content())
+        blocks = self._split_jsonl_blocks(self._get_parseable_content())
 
         if not blocks:
             self.status_msg = "No JSONL records found"
@@ -304,8 +308,10 @@ class SearchMixin:
     ) -> tuple[int, int, int] | None:
         """Find text position using pre-built key index.
 
+        경로의 모든 키를 순차적으로 따라가며 검색 범위를 좁힌 후 최종 위치 반환.
         return_key=True이면 값 대신 키 위치를 반환.
         """
+        # 데이터 트리 순회하여 최종 값 결정
         current = data
         for key in path:
             if isinstance(current, dict):
@@ -322,43 +328,137 @@ class SearchMixin:
 
         is_complex = isinstance(current, (dict, list))
 
-        if path:
-            last_key = path[-1]
-            if isinstance(last_key, str):
-                key_pattern = json.dumps(last_key, ensure_ascii=False)
+        if not path:
+            return None
+
+        # 경로의 각 단계를 따라가며 검색 범위 좁히기
+        search_line = start_line
+        search_col = min_col
+
+        for i, key in enumerate(path):
+            is_last = i == len(path) - 1
+
+            if isinstance(key, str):
+                key_pattern = json.dumps(key, ensure_ascii=False)
                 positions = key_index.get(key_pattern, [])
 
+                found_pos = None
                 for row, col in positions:
-                    if row > start_line or (row == start_line and col >= min_col):
-                        if return_key:
-                            return (row, col, col + len(key_pattern))
-                        if is_complex:
-                            return (row, col, col + len(key_pattern))
-                        else:
-                            line = self.lines[row]
-                            value_start = col + len(key_pattern)
-                            while (
-                                value_start < len(line) and line[value_start] in ": \t"
-                            ):
-                                value_start += 1
-                            target_str = json.dumps(current, ensure_ascii=False)
-                            if line[value_start:].startswith(target_str):
-                                return (row, value_start, value_start + len(target_str))
-                            value_end = self._find_value_end(line, value_start)
-                            if value_end > value_start:
-                                return (row, value_start, value_end)
-                return None
-            else:
-                if is_complex:
+                    if row > search_line or (row == search_line and col >= search_col):
+                        found_pos = (row, col)
+                        break
+
+                if found_pos is None:
                     return None
-                target_str = json.dumps(current, ensure_ascii=False)
-                for row in range(start_line, len(self.lines)):
+
+                row, col = found_pos
+
+                if is_last:
+                    if return_key:
+                        return (row, col, col + len(key_pattern))
+                    if is_complex:
+                        return (row, col, col + len(key_pattern))
                     line = self.lines[row]
-                    search_start = min_col if row == start_line else 0
-                    pos = line.find(target_str, search_start)
+                    value_start = col + len(key_pattern)
+                    while value_start < len(line) and line[value_start] in ": \t":
+                        value_start += 1
+                    target_str = json.dumps(current, ensure_ascii=False)
+                    if line[value_start:].startswith(target_str):
+                        return (row, value_start, value_start + len(target_str))
+                    value_end = self._find_value_end(line, value_start)
+                    if value_end > value_start:
+                        return (row, value_start, value_end)
+                    return None
+                else:
+                    # 중간 키: 이 키 이후로 검색 범위 좁히기
+                    search_line = row
+                    search_col = col + len(key_pattern)
+
+            elif isinstance(key, int):
+                # 배열 인덱스: '[' 찾은 후 bracket depth로 n번째 요소 위치 찾기
+                bracket_pos = self._find_char_from(search_line, search_col, "[")
+                if bracket_pos is None:
+                    return None
+                elem_pos = self._find_array_element(
+                    bracket_pos[0], bracket_pos[1] + 1, key
+                )
+                if elem_pos is None:
+                    return None
+                search_line, search_col = elem_pos
+
+                if is_last:
+                    if is_complex:
+                        return (search_line, search_col, search_col + 1)
+                    target_str = json.dumps(current, ensure_ascii=False)
+                    line = self.lines[search_line]
+                    pos = line.find(target_str, search_col)
                     if pos >= 0:
-                        return (row, pos, pos + len(target_str))
-                return None
+                        return (search_line, pos, pos + len(target_str))
+                    return None
+
+        return None
+
+    def _find_char_from(
+        self, row: int, col: int, target: str
+    ) -> tuple[int, int] | None:
+        """row:col 이후에서 target 문자의 첫 위치 반환."""
+        for r in range(row, len(self.lines)):
+            line = self.lines[r]
+            start = col if r == row else 0
+            idx = line.find(target, start)
+            if idx >= 0:
+                return (r, idx)
+        return None
+
+    def _find_array_element(
+        self, row: int, col: int, index: int
+    ) -> tuple[int, int] | None:
+        """'[' 바로 다음 위치(row, col)부터 index번째 배열 요소의 시작 위치 반환."""
+        depth = 0
+        count = 0
+        in_string = False
+        r, c = row, col
+        while r < len(self.lines):
+            line = self.lines[r]
+            while c < len(line):
+                ch = line[c]
+                if in_string:
+                    if ch == '"' and (c == 0 or line[c - 1] != "\\"):
+                        in_string = False
+                    c += 1
+                    continue
+                if ch == '"':
+                    if depth == 0 and count == index:
+                        return (r, c)
+                    in_string = True
+                    c += 1
+                    continue
+                if ch in " \t\n\r":
+                    c += 1
+                    continue
+                if ch == ",":
+                    if depth == 0:
+                        count += 1
+                    c += 1
+                    continue
+                if ch in ("{", "["):
+                    if depth == 0 and count == index:
+                        return (r, c)
+                    depth += 1
+                    c += 1
+                    continue
+                if ch in ("}", "]"):
+                    depth -= 1
+                    if depth < 0:
+                        return None
+                    c += 1
+                    continue
+                # 숫자, true, false, null 등 값의 시작
+                if depth == 0 and count == index:
+                    return (r, c)
+                c += 1
+            r += 1
+            c = 0
         return None
 
     @staticmethod

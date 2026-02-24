@@ -11,7 +11,7 @@ from jvim.diff import (
     normalize_json,
     normalize_jsonl,
 )
-from jvim.differ import DiffEditor, JsonDiffApp, SyncJsonEditor
+from jvim.differ import DiffEditor, JsonDiffApp, SyncJsonEditor, _collect_file_pairs
 
 
 class TestFormatJson:
@@ -762,3 +762,552 @@ class TestDiffBinaryFile:
         )
         assert result.returncode != 0
         assert "binary file" in result.stderr
+
+
+class TestDirectoryDiff:
+    """디렉토리 비교 기능 테스트."""
+
+    def test_collect_different_files(self, tmp_path):
+        """다른 파일만 수집."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        (left / "a.json").write_text('{"a": 1}')
+        (right / "a.json").write_text('{"a": 2}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 1
+        assert pairs[0] == (str(left / "a.json"), str(right / "a.json"))
+
+    def test_skip_identical_files(self, tmp_path):
+        """동일한 파일은 건너뛰기."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        (left / "same.json").write_text('{"x": 1}')
+        (right / "same.json").write_text('{"x": 1}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 0
+
+    def test_file_only_in_left(self, tmp_path):
+        """한쪽에만 있는 파일 포함 (left only)."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        (left / "only_left.json").write_text('{"a": 1}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 1
+        assert pairs[0] == (str(left / "only_left.json"), "")
+
+    def test_file_only_in_right(self, tmp_path):
+        """한쪽에만 있는 파일 포함 (right only)."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        (right / "only_right.json").write_text('{"b": 2}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 1
+        assert pairs[0] == ("", str(right / "only_right.json"))
+
+    def test_recursive_subdirectory(self, tmp_path):
+        """하위 디렉토리 재귀 탐색."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        (left / "sub").mkdir(parents=True)
+        (right / "sub").mkdir(parents=True)
+        (left / "sub" / "deep.json").write_text('{"v": 1}')
+        (right / "sub" / "deep.json").write_text('{"v": 2}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 1
+        assert "sub" in pairs[0][0]
+
+    def test_skip_binary_files(self, tmp_path):
+        """바이너리 파일 제외."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        (left / "bin.dat").write_bytes(b"\x00\x01\x02")
+        (right / "bin.dat").write_bytes(b"\x00\x01\x03")
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 0
+
+    def test_empty_directories(self, tmp_path):
+        """빈 디렉토리 → 빈 리스트."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert pairs == []
+
+    def test_sorted_by_relative_path(self, tmp_path):
+        """상대 경로 기준 알파벳 정렬."""
+        left = tmp_path / "left"
+        right = tmp_path / "right"
+        left.mkdir()
+        right.mkdir()
+        # 역순으로 생성해도 정렬됨
+        for name in ("c.json", "a.json", "b.json"):
+            (left / name).write_text(f'{{"file": "{name}"}}')
+            (right / name).write_text(f'{{"file": "{name}", "extra": true}}')
+        pairs = _collect_file_pairs(str(left), str(right))
+        assert len(pairs) == 3
+        names = [p[0].split("/")[-1] for p in pairs]
+        assert names == ["a.json", "b.json", "c.json"]
+
+    def test_diff_app_with_file_pairs(self):
+        """JsonDiffApp에 file_pairs 전달 시 초기 상태 확인."""
+        pairs = [("/tmp/a.json", "/tmp/b.json"), ("/tmp/c.json", "")]
+        app = JsonDiffApp(
+            left_path=pairs[0][0],
+            right_path=pairs[0][1],
+            file_pairs=pairs,
+        )
+        assert app.file_pairs == pairs
+        assert app.pair_index == 0
+        assert len(app.file_pairs) == 2
+
+    def test_detect_jsonl_by_extension(self):
+        """확장자 .jsonl로 JSONL 감지."""
+        assert JsonDiffApp._detect_jsonl_for_pair("a.jsonl", "b.json", "", "") is True
+        assert JsonDiffApp._detect_jsonl_for_pair("a.json", "b.JSONL", "", "") is True
+
+    def test_detect_jsonl_by_content(self):
+        """내용 기반 JSONL 감지."""
+        content = '{"a":1}\n{"b":2}'
+        assert (
+            JsonDiffApp._detect_jsonl_for_pair("a.json", "b.json", content, "") is True
+        )
+
+    def test_detect_jsonl_negative(self):
+        """일반 JSON은 JSONL로 감지되지 않음."""
+        assert (
+            JsonDiffApp._detect_jsonl_for_pair("a.json", "b.json", '{"a":1}', '{"b":2}')
+            is False
+        )
+
+    def test_detect_jsonl_empty_path(self):
+        """빈 경로(한쪽만 있는 파일)에서도 감지 동작."""
+        content = '{"a":1}\n{"b":2}'
+        assert JsonDiffApp._detect_jsonl_for_pair("", "b.json", "", content) is True
+        assert JsonDiffApp._detect_jsonl_for_pair("a.jsonl", "", "", "") is True
+
+
+class TestBuildLinePaths:
+    """_build_line_paths 테스트."""
+
+    def test_simple_object(self):
+        """단순 객체의 경로 추적."""
+        lines = json.dumps({"a": 1, "b": 2}, indent=4).split("\n")
+        paths = DiffEditor._build_line_paths(lines)
+        assert len(paths) == len(lines)
+        assert paths[0] == "$"  # {
+        assert "$.a" in paths
+        assert "$.b" in paths
+
+    def test_nested_object(self):
+        """중첩 객체의 경로 추적."""
+        lines = json.dumps({"a": {"x": 1, "y": 2}}, indent=4).split("\n")
+        paths = DiffEditor._build_line_paths(lines)
+        assert "$.a" in paths
+        assert "$.a.x" in paths
+        assert "$.a.y" in paths
+
+    def test_array(self):
+        """배열의 경로 추적."""
+        lines = json.dumps({"items": [1, 2, 3]}, indent=4).split("\n")
+        paths = DiffEditor._build_line_paths(lines)
+        assert "$.items" in paths
+
+    def test_object_array(self):
+        """객체 배열의 경로 추적."""
+        data = {"items": [{"id": 1}, {"id": 2}]}
+        lines = json.dumps(data, indent=4).split("\n")
+        paths = DiffEditor._build_line_paths(lines)
+        assert "$.items" in paths
+        assert "$.items[0]" in paths or any("$.items[0]" in p for p in paths)
+        assert any("$.items[0].id" in p for p in paths)
+        assert any("$.items[1].id" in p for p in paths)
+
+    def test_empty_lines(self):
+        """빈 라인은 빈 경로."""
+        paths = DiffEditor._build_line_paths(["", "  ", ""])
+        assert paths[0] == ""
+
+    def test_empty_object(self):
+        """빈 객체."""
+        lines = json.dumps({"a": {}}, indent=4).split("\n")
+        paths = DiffEditor._build_line_paths(lines)
+        assert "$.a" in paths
+
+
+class TestIgnorePaths:
+    """ignore path 기능 테스트."""
+
+    def _make_editor_with_diff(self, data: dict) -> DiffEditor:
+        """diff 데이터가 설정된 DiffEditor 생성."""
+        content = json.dumps(data, indent=4)
+        lines = content.split("\n")
+        tags = [DiffTag.REPLACE] * len(lines)
+        editor = DiffEditor()
+        editor.set_diff_data(lines, tags, set(), [])
+        return editor
+
+    def test_suppressed_lines_update(self):
+        """ignore 패턴 추가 시 _suppressed_lines 갱신."""
+        editor = self._make_editor_with_diff({"a": 1, "b": 2, "c": 3})
+        editor._ignore_paths = ["$.b"]
+        editor._update_suppressed_lines()
+        assert len(editor._suppressed_lines) > 0
+        # $.b 라인만 억제
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        for i in editor._suppressed_lines:
+            assert line_paths[i].startswith("$.b")
+
+    def test_line_background_suppressed(self):
+        """억제된 라인은 빈 배경 반환."""
+        editor = self._make_editor_with_diff({"a": 1, "b": 2})
+        editor._ignore_paths = ["$.b"]
+        editor._update_suppressed_lines()
+        for i in editor._suppressed_lines:
+            assert editor._line_background(i) == ""
+
+    def test_nested_path_suppresses_children(self):
+        """중첩 경로의 하위 전체 억제."""
+        editor = self._make_editor_with_diff(
+            {"metadata": {"timestamp": "2024", "version": "1.0"}}
+        )
+        editor._ignore_paths = ["$.metadata"]
+        editor._update_suppressed_lines()
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        for i in editor._suppressed_lines:
+            assert line_paths[i].startswith("$.metadata")
+        # metadata.timestamp과 metadata.version 모두 억제
+        meta_lines = [i for i, p in enumerate(line_paths) if p.startswith("$.metadata")]
+        assert all(i in editor._suppressed_lines for i in meta_lines)
+
+    def test_recursive_pattern(self):
+        """$..key 재귀 매칭 테스트."""
+        data = {"a": {"name": "x"}, "b": {"name": "y"}}
+        editor = self._make_editor_with_diff(data)
+        editor._ignore_paths = ["$..name"]
+        editor._update_suppressed_lines()
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        # $.a.name, $.b.name 라인이 억제
+        name_lines = [i for i, p in enumerate(line_paths) if p.endswith(".name")]
+        assert len(name_lines) >= 2
+        assert all(i in editor._suppressed_lines for i in name_lines)
+
+    def test_filler_lines_not_suppressed(self):
+        """filler 라인은 억제하지 않음."""
+        editor = DiffEditor()
+        lines = ["{\n", '    "a": 1', "", "}"]
+        tags = [DiffTag.EQUAL, DiffTag.REPLACE, DiffTag.INSERT, DiffTag.EQUAL]
+        editor.set_diff_data(lines, tags, {2}, [])
+        editor._ignore_paths = ["$.a"]
+        editor._update_suppressed_lines()
+        assert 2 not in editor._suppressed_lines
+
+    def test_clear_all_ignore(self):
+        """전체 해제 시 suppressed_lines 비워짐."""
+        editor = self._make_editor_with_diff({"a": 1, "b": 2})
+        editor._ignore_paths = ["$.a", "$.b"]
+        editor._update_suppressed_lines()
+        assert len(editor._suppressed_lines) > 0
+        editor._ignore_paths.clear()
+        editor._update_suppressed_lines()
+        assert len(editor._suppressed_lines) == 0
+
+    def test_no_ignore_paths(self):
+        """ignore 패턴 없으면 억제 없음."""
+        editor = self._make_editor_with_diff({"a": 1})
+        editor._update_suppressed_lines()
+        assert len(editor._suppressed_lines) == 0
+
+    def test_non_matching_pattern(self):
+        """매칭되지 않는 패턴은 억제 없음."""
+        editor = self._make_editor_with_diff({"a": 1, "b": 2})
+        editor._ignore_paths = ["$.nonexistent"]
+        editor._update_suppressed_lines()
+        assert len(editor._suppressed_lines) == 0
+
+    def test_wildcard_pattern(self):
+        """[*] 와일드카드 패턴으로 배열 요소 억제."""
+        data = {"items": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]}
+        editor = self._make_editor_with_diff(data)
+        editor._ignore_paths = ["$.items[*].id"]
+        editor._update_suppressed_lines()
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        id_lines = [i for i, p in enumerate(line_paths) if p.endswith(".id")]
+        assert len(id_lines) >= 2
+        assert all(i in editor._suppressed_lines for i in id_lines)
+        # name 라인은 억제되지 않음
+        name_lines = [i for i, p in enumerate(line_paths) if p.endswith(".name")]
+        assert all(i not in editor._suppressed_lines for i in name_lines)
+
+    def test_wildcard_nested_suppresses_children(self):
+        """[*] 와일드카드로 매칭된 경로의 하위 전체 억제."""
+        data = {
+            "groups": [
+                {"meta": {"ts": "2024", "v": 1}},
+                {"meta": {"ts": "2025", "v": 2}},
+            ]
+        }
+        editor = self._make_editor_with_diff(data)
+        editor._ignore_paths = ["$.groups[*].meta"]
+        editor._update_suppressed_lines()
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        meta_lines = [i for i, p in enumerate(line_paths) if ".meta" in p]
+        assert len(meta_lines) >= 4  # meta, ts, v (x2)
+        assert all(i in editor._suppressed_lines for i in meta_lines)
+
+
+class TestDiffEditorParseableContent:
+    """DiffEditor._get_parseable_content 및 JSONPath 검색 테스트."""
+
+    def test_parseable_content_excludes_fillers(self):
+        """filler 행이 제외된 콘텐츠 반환."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "", "}"]
+        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
+        editor.set_diff_data(lines, tags, {2}, [])
+        content = editor._get_parseable_content()
+        assert content == '{\n    "a": 1\n}'
+        # filler 제외 후 JSON 파싱 가능
+        data = json.loads(content)
+        assert data == {"a": 1}
+
+    def test_parseable_content_valid_json(self):
+        """filler 없는 경우 원본과 동일."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "}"]
+        tags = [DiffTag.EQUAL, DiffTag.REPLACE, DiffTag.EQUAL]
+        editor.set_diff_data(lines, tags, set(), [])
+        content = editor._get_parseable_content()
+        assert json.loads(content) == {"a": 1}
+
+    def test_parseable_content_jsonl_with_fillers(self):
+        """JSONL 콘텐츠에서 filler 제외 후 블록 분리 가능."""
+        editor = DiffEditor()
+        # JSONL: 두 레코드, 첫 번째에 filler 있음
+        lines = ["{", '    "a": 1', "", "}", "", "{", '    "b": 2', "}"]
+        tags = [
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.INSERT,  # filler
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,  # JSONL separator
+            DiffTag.EQUAL,
+            DiffTag.REPLACE,
+            DiffTag.EQUAL,
+        ]
+        editor.set_diff_data(lines, tags, {2}, [])
+        content = editor._get_parseable_content()
+        # filler 제외 후 JSONL 블록 분리
+        blocks = editor._split_jsonl_blocks(content)
+        assert len(blocks) == 2
+        assert json.loads(blocks[0]) == {"a": 1}
+        assert json.loads(blocks[1]) == {"b": 2}
+
+    def test_compute_block_start_lines_skips_fillers(self):
+        """_compute_block_start_lines가 filler를 건너뛰고 올바른 블록 시작 반환."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "", "}", "", "{", '    "b": 2', "}"]
+        tags = [
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.INSERT,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.REPLACE,
+            DiffTag.EQUAL,
+        ]
+        editor.set_diff_data(lines, tags, {2}, [])
+        block_starts = editor._compute_block_start_lines()
+        # 블록 0: line 0 ({), 블록 1: line 5 ({)
+        assert block_starts[0] == 0
+        assert block_starts[1] == 5
+
+    def test_recursive_pattern_with_fillers(self):
+        """filler가 있는 DiffEditor에서 재귀 패턴이 올바르게 작동."""
+        data = {"a": {"name": "x"}, "b": {"name": "y"}}
+        content = json.dumps(data, indent=4)
+        lines = content.split("\n")
+        # 중간에 filler 삽입 시뮬레이션
+        filler_idx = 4
+        lines.insert(filler_idx, "")
+        tags = [DiffTag.REPLACE] * len(lines)
+        tags[filler_idx] = DiffTag.INSERT
+
+        editor = DiffEditor()
+        editor.set_diff_data(lines, tags, {filler_idx}, [])
+        editor._ignore_paths = ["$..name"]
+        editor._update_suppressed_lines()
+
+        # filler 행은 억제되지 않음
+        assert filler_idx not in editor._suppressed_lines
+        # name 라인은 억제됨
+        line_paths = DiffEditor._build_line_paths(editor.lines)
+        name_lines = [i for i, p in enumerate(line_paths) if p.endswith(".name")]
+        assert len(name_lines) >= 2
+        assert all(i in editor._suppressed_lines for i in name_lines)
+
+
+class TestJsonlFillerSeparation:
+    """JSONL separator와 filler 구분 테스트."""
+
+    def test_jsonl_separator_not_treated_as_filler(self):
+        """양쪽 모두 빈 JSONL separator는 filler에서 제외."""
+        left = '{"a":1}\n{"b":2}'
+        right = '{"a":1}\n{"b":99}'
+        result = compute_json_diff(left, right, jsonl=True)
+
+        left_fillers = {
+            i
+            for i, (line, tag) in enumerate(
+                zip(result.left_lines, result.left_line_tags)
+            )
+            if not line and tag != DiffTag.EQUAL and result.right_lines[i]
+        }
+        # JSONL separator(양쪽 모두 빈 줄)는 filler에 포함되지 않음
+        for i in range(len(result.left_lines)):
+            if not result.left_lines[i] and not result.right_lines[i]:
+                assert i not in left_fillers
+
+    def test_jsonl_parseable_content_preserves_separators(self):
+        """_get_parseable_content가 JSONL separator를 유지."""
+        left = '{"a":1}\n{"b":2}'
+        right = '{"a":1}\n{"b":99}'
+        result = compute_json_diff(left, right, jsonl=True)
+
+        left_fillers = {
+            i
+            for i, (line, tag) in enumerate(
+                zip(result.left_lines, result.left_line_tags)
+            )
+            if not line and tag != DiffTag.EQUAL and result.right_lines[i]
+        }
+
+        editor = DiffEditor()
+        editor.set_diff_data(
+            result.left_lines, result.left_line_tags, left_fillers, result.hunks
+        )
+        content = editor._get_parseable_content()
+        blocks = editor._split_jsonl_blocks(content)
+        assert len(blocks) == 2
+        assert json.loads(blocks[0]) == {"a": 1}
+        assert json.loads(blocks[1]) == {"b": 2}
+
+    def test_real_fillers_still_excluded(self):
+        """실제 filler(한쪽만 빈 줄)는 여전히 제외."""
+        left = '{"a":1}'
+        right = '{"a":1}\n{"b":2}'
+        result = compute_json_diff(left, right, jsonl=True)
+
+        left_fillers = {
+            i
+            for i, (line, tag) in enumerate(
+                zip(result.left_lines, result.left_line_tags)
+            )
+            if not line and tag != DiffTag.EQUAL and result.right_lines[i]
+        }
+        # 좌측에 filler가 있어야 함 (우측에만 두 번째 레코드가 있으므로)
+        assert len(left_fillers) > 0
+
+        editor = DiffEditor()
+        editor.set_diff_data(
+            result.left_lines, result.left_line_tags, left_fillers, result.hunks
+        )
+        content = editor._get_parseable_content()
+        # filler 제외 후 단일 JSON 파싱 가능
+        data = json.loads(content)
+        assert data == {"a": 1}
+
+
+class TestDiffGutterLayout:
+    """DiffEditor 거터 레이아웃 (logical + physical line number) 테스트."""
+
+    def test_physical_line_map(self):
+        """filler 제외 물리 라인 번호 매핑 검증."""
+        editor = DiffEditor()
+        lines = ["{", '    "key": "value",', "", "}"]
+        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
+        filler_rows = {2}
+        editor.set_diff_data(lines, tags, filler_rows, [])
+        # filler=0, 나머지는 1-based 연속 번호
+        assert editor._physical_line_map == [1, 2, 0, 3]
+
+    def test_physical_line_map_no_fillers(self):
+        """filler 없으면 모든 행이 1-based 연속."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "}"]
+        tags = [DiffTag.EQUAL, DiffTag.REPLACE, DiffTag.EQUAL]
+        editor.set_diff_data(lines, tags, set(), [])
+        assert editor._physical_line_map == [1, 2, 3]
+
+    def test_physical_line_map_multiple_fillers(self):
+        """다중 filler 행 매핑."""
+        editor = DiffEditor()
+        lines = ["{", "", '    "a": 1', "", "}"]
+        tags = [
+            DiffTag.EQUAL,
+            DiffTag.INSERT,
+            DiffTag.EQUAL,
+            DiffTag.INSERT,
+            DiffTag.EQUAL,
+        ]
+        filler_rows = {1, 3}
+        editor.set_diff_data(lines, tags, filler_rows, [])
+        assert editor._physical_line_map == [1, 0, 2, 0, 3]
+
+    def test_gutter_widths_left(self):
+        """왼쪽 에디터: logical + physical 거터 너비."""
+        editor = DiffEditor()
+        lines = [f"line{i}" for i in range(10)]
+        tags = [DiffTag.EQUAL] * 10
+        editor.set_diff_data(lines, tags, {2, 5}, [])
+        editor._show_logical_line = True
+        ln_width, rec_width, prefix_w = editor._gutter_widths()
+        # logical_width = max(3, len("10")) = 3, physical_width = max(3, len("8")) = 3
+        assert editor._logical_width == 3
+        assert editor._physical_width == 3
+        assert rec_width == 0
+        assert prefix_w == 3 + 1 + 3 + 1  # logical + space + physical + space
+
+    def test_gutter_widths_right(self):
+        """오른쪽 에디터: physical만 거터 너비."""
+        editor = DiffEditor()
+        lines = [f"line{i}" for i in range(10)]
+        tags = [DiffTag.EQUAL] * 10
+        editor.set_diff_data(lines, tags, {2, 5}, [])
+        editor._show_logical_line = False
+        ln_width, rec_width, prefix_w = editor._gutter_widths()
+        assert editor._physical_width == 3
+        assert editor._logical_width == 0
+        assert rec_width == 0
+        assert prefix_w == 3 + 1  # physical + space
+
+    def test_gutter_widths_diff(self):
+        """왼쪽과 오른쪽 거터 너비 차이 검증."""
+        editor = DiffEditor()
+        lines = [f"line{i}" for i in range(10)]
+        tags = [DiffTag.EQUAL] * 10
+        editor.set_diff_data(lines, tags, {2}, [])
+
+        editor._show_logical_line = True
+        _, _, left_prefix = editor._gutter_widths()
+
+        editor._show_logical_line = False
+        _, _, right_prefix = editor._gutter_widths()
+
+        # 왼쪽이 logical 너비 + 1(공백)만큼 더 넓음
+        assert left_prefix > right_prefix
+        assert (
+            left_prefix - right_prefix == editor._logical_width + 1
+            or left_prefix > right_prefix
+        )

@@ -110,6 +110,26 @@ class CommandMixin:
 
         parts = self.command_buffer.split(None, 1)
         verb = parts[0] if parts else ""
+
+        # :uig Tab → ignore 목록에서 후보 제공
+        if verb == "uig":
+            partial = parts[1] if len(parts) > 1 else ""
+            paths = getattr(self, "_ignore_paths", [])
+            candidates = [p for p in paths if p.startswith(partial)]
+            if not candidates:
+                return
+            if len(candidates) == 1:
+                self.command_buffer = f"uig {candidates[0]}"
+            else:
+                self._tab_completions = candidates
+                self._tab_base_dir = ""
+                self._tab_verb = "uig"
+                self._tab_index = -1
+                common = os.path.commonprefix(candidates)
+                if common and len(common) > len(partial):
+                    self.command_buffer = f"uig {common}"
+            return
+
         if verb not in ("e", "w"):
             return
 
@@ -177,6 +197,19 @@ class CommandMixin:
             return
         parts = self.command_buffer.split(None, 1)
         verb = parts[0] if parts else ""
+        if verb == "uig":
+            partial = parts[1] if len(parts) > 1 else ""
+            paths = getattr(self, "_ignore_paths", [])
+            candidates = [p for p in paths if p.startswith(partial)]
+            if not candidates:
+                self._tab_completions = []
+                self._tab_index = -1
+                return
+            self._tab_completions = candidates
+            self._tab_base_dir = ""
+            self._tab_verb = "uig"
+            self._tab_index = -1
+            return
         if verb not in ("e", "w"):
             self._tab_completions = []
             self._tab_index = -1
@@ -292,5 +325,30 @@ class CommandMixin:
                 self._format_json()
         elif verb == "help":
             self.post_message(self.HelpToggleRequested())
+        elif verb == "ig":
+            if force:
+                # :ig! → 전체 해제
+                self.post_message(self.UnignorePathRequested(clear_all=True))
+                self.status_msg = "All ignore patterns cleared"
+            elif arg:
+                self.post_message(self.IgnorePathRequested(path=arg))
+                self.status_msg = f"Ignoring: {arg}"
+            else:
+                # 현재 무시 목록 표시
+                paths = getattr(self, "_ignore_paths", [])
+                if paths:
+                    self.status_msg = "Ignored: " + ", ".join(paths)
+                else:
+                    self.status_msg = "No ignored paths"
+        elif verb == "uig":
+            if arg:
+                self.post_message(self.UnignorePathRequested(path=arg))
+                self.status_msg = f"Unignored: {arg}"
+            else:
+                paths = getattr(self, "_ignore_paths", [])
+                if paths:
+                    self.status_msg = "Ignored: " + ", ".join(paths)
+                else:
+                    self.status_msg = "No ignored paths"
         else:
             self.status_msg = f"unknown command: :{cmd}"
