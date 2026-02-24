@@ -72,7 +72,7 @@ def _detect_jsonl(content: str) -> bool:
 class JsonEditorApp(App):
     """TUI app that wraps the JsonEditor widget."""
 
-    CSS_PATH = "editor.tcss"
+    CSS_PATH = "styles/editor.tcss"
     TITLE = "JSON Editor"
     BINDINGS = []
     ENABLE_COMMAND_PALETTE = False

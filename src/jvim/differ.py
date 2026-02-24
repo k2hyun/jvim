@@ -185,7 +185,7 @@ class DiffEditor(SyncJsonEditor):
 class JsonDiffApp(App):
     """Side-by-side JSON diff viewer."""
 
-    CSS_PATH = "differ.tcss"
+    CSS_PATH = "styles/differ.tcss"
     TITLE = "JSON Diff"
     BINDINGS = []
     ENABLE_COMMAND_PALETTE = False
