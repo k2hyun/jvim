@@ -14,7 +14,7 @@ Screen {
     height: 1fr;
 }
 #left-title, #right-title {
-    height: auto;
+    height: 1;
     padding: 0 1;
     background: $accent;
 }

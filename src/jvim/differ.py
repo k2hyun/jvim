@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from textual.widgets import Button, Header, Static
 from rich.text import Text
 
 from .diff import DiffHunk, DiffTag, compute_json_diff
+from .editor import _detect_jsonl
 from .widget import JsonEditor
 
 
@@ -208,7 +210,7 @@ class JsonDiffApp(App):
         yield Header(show_clock=True)
         with Horizontal(id="diff-container"):
             with Vertical(id="left-panel"):
-                yield Static(f"[b]{self.left_path}[/b]", id="left-title")
+                yield Static("", id="left-title")
                 yield DiffEditor("", id="left-editor")
                 with Vertical(id="left-ej-panel"):
                     with Horizontal(id="left-ej-header"):
@@ -216,13 +218,30 @@ class JsonDiffApp(App):
                         yield Button("\u2715", id="left-ej-close", variant="error")
                     yield DiffEditor("", id="left-ej-editor")
             with Vertical(id="right-panel"):
-                yield Static(f"[b]{self.right_path}[/b]", id="right-title")
+                yield Static("", id="right-title")
                 yield DiffEditor("", id="right-editor")
                 with Vertical(id="right-ej-panel"):
                     with Horizontal(id="right-ej-header"):
                         yield Static("[b]Embedded JSON[/b]", id="right-ej-title")
                         yield Button("\u2715", id="right-ej-close", variant="error")
                     yield DiffEditor("", id="right-ej-editor")
+
+    @staticmethod
+    def _truncate_path(path: str, width: int) -> str:
+        """패널 폭에 맞게 경로를 왼쪽부터 잘라서 파일명 우선 표시."""
+        # padding 좌우 1칸씩 제외
+        available = width - 2
+        if available <= 0 or len(path) <= available:
+            return path
+        return "\u2026" + path[-(available - 1) :]
+
+    def _update_titles(self) -> None:
+        """패널 폭에 맞게 타이틀 경로 업데이트."""
+        for side, path in (("left", self.left_path), ("right", self.right_path)):
+            title = self.query_one(f"#{side}-title", Static)
+            w = title.size.width
+            truncated = self._truncate_path(path, w) if w > 0 else path
+            title.update(f"[b]{truncated}[/b]")
 
     @staticmethod
     def _unfold_diff_regions(editor: DiffEditor) -> None:
@@ -244,7 +263,11 @@ class JsonDiffApp(App):
         for i in to_expand:
             editor._collapsed_strings.discard(i)
 
+    def on_resize(self) -> None:
+        self._update_titles()
+
     def on_mount(self) -> None:
+        self._update_titles()
         left_content = Path(self.left_path).read_text(encoding="utf-8")
         right_content = Path(self.right_path).read_text(encoding="utf-8")
 
@@ -515,13 +538,60 @@ class JsonDiffApp(App):
             self.query_one("#right-editor", DiffEditor).focus()
 
 
+def _install_difftool(global_flag: str = "--global", cwd: str | None = None) -> None:
+    """git difftool로 jvimdiff 등록."""
+    try:
+        subprocess.run(
+            [
+                "git",
+                "config",
+                global_flag,
+                "difftool.jvimdiff.cmd",
+                'jvimdiff "$LOCAL" "$REMOTE"',
+            ],
+            check=True,
+            cwd=cwd,
+        )
+        subprocess.run(
+            ["git", "config", global_flag, "difftool.jvimdiff.trustExitCode", "true"],
+            check=True,
+            cwd=cwd,
+        )
+    except FileNotFoundError:
+        print("jvimdiff: git not found", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as exc:
+        print(f"jvimdiff: git config failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print("Installed jvimdiff as git difftool.")
+    print("  Usage: git difftool -t jvimdiff")
+    print("  Set as default: git config --global diff.tool jvimdiff")
+
+
+def _uninstall_difftool(global_flag: str = "--global", cwd: str | None = None) -> None:
+    """git difftool에서 jvimdiff 제거."""
+    try:
+        subprocess.run(
+            ["git", "config", global_flag, "--remove-section", "difftool.jvimdiff"],
+            check=True,
+            cwd=cwd,
+        )
+    except FileNotFoundError:
+        print("jvimdiff: git not found", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError:
+        print("jvimdiff: difftool.jvimdiff not configured", file=sys.stderr)
+        sys.exit(1)
+    print("Uninstalled jvimdiff from git difftool.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="jvimdiff",
         description="JSON diff viewer with vim-style keybindings",
     )
-    parser.add_argument("file1", help="First JSON file")
-    parser.add_argument("file2", help="Second JSON file")
+    parser.add_argument("file1", nargs="?", default="", help="First JSON file")
+    parser.add_argument("file2", nargs="?", default="", help="Second JSON file")
     parser.add_argument(
         "--no-normalize",
         action="store_true",
@@ -533,17 +603,45 @@ def main() -> None:
         default=None,
         help="Treat files as JSONL (auto-detected by .jsonl extension)",
     )
+    parser.add_argument(
+        "--install-difftool",
+        action="store_true",
+        default=False,
+        help="register jvimdiff as git difftool (git config --global)",
+    )
+    parser.add_argument(
+        "--uninstall-difftool",
+        action="store_true",
+        default=False,
+        help="remove jvimdiff from git difftool (git config --global --remove-section)",
+    )
     args = parser.parse_args()
+
+    if args.install_difftool:
+        _install_difftool()
+        sys.exit(0)
+    if args.uninstall_difftool:
+        _uninstall_difftool()
+        sys.exit(0)
+
+    if not args.file1 or not args.file2:
+        parser.error("the following arguments are required: file1, file2")
 
     for f in (args.file1, args.file2):
         if not Path(f).exists():
             print(f"jvimdiff: {f}: No such file", file=sys.stderr)
             sys.exit(1)
 
-    # JSONL 자동 감지: 둘 중 하나라도 .jsonl 확장자면 JSONL 모드
+    # JSONL 자동 감지: 확장자 또는 내용 기반
     jsonl = args.jsonl
     if jsonl is None:
         jsonl = any(f.lower().endswith(".jsonl") for f in (args.file1, args.file2))
+    if not jsonl:
+        for f in (args.file1, args.file2):
+            content = Path(f).read_text(encoding="utf-8")
+            if _detect_jsonl(content):
+                jsonl = True
+                break
 
     app = JsonDiffApp(
         left_path=args.file1,

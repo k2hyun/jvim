@@ -223,6 +223,33 @@ jvim은 vim 스타일의 치환 명령으로 찾기-바꾸기를 지원합니다
 
 대체 값은 자동 감지됩니다: 숫자(`42`), 불리언(`true`/`false`), `null`은 그대로 사용되며, 나머지는 JSON 문자열로 인코딩됩니다.
 
+## Git Difftool 연동
+
+jvimdiff를 `git difftool`로 사용하여 저장소의 JSON 변경사항을 비교할 수 있습니다.
+
+### 설정
+
+```bash
+# jvimdiff를 git difftool로 등록
+jvimdiff --install-difftool
+
+# 등록 제거
+jvimdiff --uninstall-difftool
+```
+
+### 사용법
+
+```bash
+# jvimdiff로 비교
+git difftool -t jvimdiff              # 모든 변경 파일
+git difftool -t jvimdiff file.json    # 특정 파일
+git difftool -t jvimdiff HEAD~3       # 특정 커밋과 비교
+
+# 기본 difftool로 설정
+git config --global diff.tool jvimdiff
+git difftool file.json                # -t 플래그 없이 사용
+```
+
 ## Diff 뷰어
 
 jvim에는 두 JSON 파일을 나란히 비교하는 diff 뷰어가 포함되어 있습니다.

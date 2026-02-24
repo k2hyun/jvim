@@ -1,5 +1,8 @@
 """Tests for JsonEditor widget."""
 
+import subprocess
+
+from src.jvim.differ import JsonDiffApp, _install_difftool, _uninstall_difftool
 from src.jvim.editor import _detect_jsonl
 from src.jvim.widget import JsonEditor, EditorMode
 from src.jvim.action.jsonpath import parse_jsonpath_filter, jsonpath_value_matches
@@ -2058,3 +2061,87 @@ class TestDetectJsonl:
     def test_json_values_not_objects(self):
         """JSON 값이 객체가 아니어도 JSONL 감지."""
         assert _detect_jsonl("1\n2\n3") is True
+
+
+class TestGitDifftool:
+    """Tests for git difftool install/uninstall."""
+
+    def test_install_difftool(self, tmp_path):
+        """--install-difftool로 local config에 등록."""
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        _install_difftool("--local", cwd=str(tmp_path))
+        result = subprocess.run(
+            ["git", "config", "difftool.jvimdiff.cmd"],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0
+        assert "jvimdiff" in result.stdout
+
+    def test_install_difftool_trust_exit_code(self, tmp_path):
+        """trustExitCode 설정 확인."""
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        _install_difftool("--local", cwd=str(tmp_path))
+        result = subprocess.run(
+            ["git", "config", "difftool.jvimdiff.trustExitCode"],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode == 0
+        assert "true" in result.stdout
+
+    def test_uninstall_difftool(self, tmp_path):
+        """--uninstall-difftool로 config에서 제거."""
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        _install_difftool("--local", cwd=str(tmp_path))
+        _uninstall_difftool("--local", cwd=str(tmp_path))
+        result = subprocess.run(
+            ["git", "config", "--local", "difftool.jvimdiff.cmd"],
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+        )
+        assert result.returncode != 0
+
+    def test_uninstall_without_install(self, tmp_path):
+        """미설치 상태에서 uninstall 시 에러 종료."""
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        import pytest
+
+        with pytest.raises(SystemExit):
+            _uninstall_difftool("--local", cwd=str(tmp_path))
+
+
+class TestTruncatePath:
+    """diff 뷰어 타이틀 경로 truncation 테스트."""
+
+    def test_short_path_unchanged(self):
+        """폭보다 짧은 경로는 그대로."""
+        assert JsonDiffApp._truncate_path("file.json", 40) == "file.json"
+
+    def test_exact_fit(self):
+        """padding 제외 폭에 정확히 맞는 경로."""
+        # width=22, padding=2 → available=20
+        path = "a" * 20
+        assert JsonDiffApp._truncate_path(path, 22) == path
+
+    def test_long_path_truncated(self):
+        """긴 경로는 왼쪽이 잘리고 … 붙음."""
+        path = "/very/long/path/to/some/deep/file.json"
+        result = JsonDiffApp._truncate_path(path, 22)
+        assert result.startswith("\u2026")
+        assert result.endswith("file.json")
+        # padding 제외 available=20, ellipsis 1 + 나머지 19
+        assert len(result) == 20
+
+    def test_preserves_filename(self):
+        """파일명이 항상 보임."""
+        path = "/a/b/c/d/e/f/g/data.json"
+        result = JsonDiffApp._truncate_path(path, 20)
+        assert "data.json" in result
+
+    def test_zero_width(self):
+        """폭 0이면 원본 반환."""
+        assert JsonDiffApp._truncate_path("file.json", 0) == "file.json"

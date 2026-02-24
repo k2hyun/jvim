@@ -225,6 +225,33 @@ When the find pattern starts with `$.` or `$[`, substitute operates on JSON stru
 
 Replacement values are auto-detected: numbers (`42`), booleans (`true`/`false`), `null` stay as-is; everything else is JSON-encoded as a string.
 
+## Git Difftool Integration
+
+jvimdiff can be used as a `git difftool` to compare JSON changes in your repository.
+
+### Setup
+
+```bash
+# Register jvimdiff as git difftool
+jvimdiff --install-difftool
+
+# Remove registration
+jvimdiff --uninstall-difftool
+```
+
+### Usage
+
+```bash
+# Compare using jvimdiff
+git difftool -t jvimdiff              # All changed files
+git difftool -t jvimdiff file.json    # Specific file
+git difftool -t jvimdiff HEAD~3       # Compare with specific commit
+
+# Set as default difftool
+git config --global diff.tool jvimdiff
+git difftool file.json                # Use without -t flag
+```
+
 ## Diff Viewer
 
 jvim includes a side-by-side diff viewer for comparing two JSON files.
