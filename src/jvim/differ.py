@@ -155,10 +155,6 @@ class DiffEditor(SyncJsonEditor):
         self._current_hunk: int = -1
         self._ignore_paths: list[str] = []
         self._suppressed_lines: set[int] = set()
-        self._physical_line_map: list[int] = []
-        self._show_logical_line: bool = True
-        self._physical_width: int = 3
-        self._logical_width: int = 3
 
     def _get_parseable_content(self) -> str:
         """filler 행을 제외한 JSON 파싱용 콘텐츠."""
@@ -197,6 +193,7 @@ class DiffEditor(SyncJsonEditor):
         self._filler_rows = filler_rows
         self._diff_hunks = hunks
         self._current_hunk = -1
+        self.jsonl = jsonl
         self.cursor_row = 0
         self.cursor_col = 0
         self._scroll_top = 0
@@ -204,52 +201,8 @@ class DiffEditor(SyncJsonEditor):
         self._folded_lines.clear()
         self._folded_lines_dirty = False
         self._folded_lines_folds_len = 0
-        # physical line map 구축
-        if jsonl:
-            self._physical_line_map = self._build_jsonl_physical_map()
-        else:
-            physical = 0
-            self._physical_line_map = []
-            for i in range(len(self.lines)):
-                if i in self._filler_rows:
-                    self._physical_line_map.append(0)
-                else:
-                    physical += 1
-                    self._physical_line_map.append(physical)
         self._invalidate_caches()
         self.refresh()
-
-    def _build_jsonl_physical_map(self) -> list[int]:
-        """JSONL 레코드 기반 physical line map (원본 파일 라인 번호)."""
-        result = [0] * len(self.lines)
-        record_num = 0
-        in_block = False
-        block_has_content = False
-        block_start = 0
-        for i, line in enumerate(self.lines):
-            if line.strip():
-                if not in_block:
-                    in_block = True
-                    block_has_content = False
-                    block_start = i
-                if i not in self._filler_rows:
-                    block_has_content = True
-            else:
-                if in_block:
-                    if block_has_content:
-                        record_num += 1
-                    for j in range(block_start, i):
-                        if j not in self._filler_rows:
-                            result[j] = record_num
-                    in_block = False
-        # 마지막 블록 처리
-        if in_block:
-            if block_has_content:
-                record_num += 1
-            for j in range(block_start, len(self.lines)):
-                if j not in self._filler_rows:
-                    result[j] = record_num
-        return result
 
     def _line_background(self, line_idx: int) -> str:
         if line_idx in self._suppressed_lines:
@@ -261,58 +214,22 @@ class DiffEditor(SyncJsonEditor):
             return self._DIFF_BG.get(tag, "")
         return ""
 
-    def _gutter_widths(self) -> tuple[int, int, int]:
-        max_physical = max(1, len(self.lines) - len(self._filler_rows))
-        self._physical_width = max(3, len(str(max_physical)))
-        if self._show_logical_line:
-            self._logical_width = max(3, len(str(len(self.lines))))
-            prefix_w = self._logical_width + 1 + self._physical_width + 1
-        else:
-            self._logical_width = 0
-            prefix_w = self._physical_width + 1
-        return self._physical_width, 0, prefix_w
-
-    def _render_gutter(
-        self,
-        line_idx,
-        si,
-        rows_used,
-        jsonl_records,
-        prefix_w,
-        ln_width,
-        rec_width,
-        result,
-        result_append,
-        gutter_pad,
-    ):
-        if si == 0 or rows_used == 0:
-            is_filler = line_idx in self._filler_rows
-            if not self._show_logical_line and is_filler:
-                # 오른쪽 에디터 filler: 거터 전체 공백
-                result_append(result, " " * prefix_w)
-                return
-            if self._show_logical_line:
-                # 왼쪽: logical line number (항상 표시)
-                result_append(
-                    result, f"{line_idx + 1:>{self._logical_width}} ", style="dim cyan"
-                )
-            # physical line number (filler면 공백)
-            if is_filler:
-                result_append(result, " " * (self._physical_width + 1))
+    def _jsonl_line_records(self) -> list[int]:
+        """filler 행을 건너뛰는 JSONL 레코드 매핑."""
+        result = [0] * len(self.lines)
+        block_idx = 0
+        in_block = False
+        for i, line in enumerate(self.lines):
+            if i in self._filler_rows:
+                continue
+            if line.strip():
+                if not in_block:
+                    block_idx += 1
+                    result[i] = block_idx
+                    in_block = True
             else:
-                phy = (
-                    self._physical_line_map[line_idx]
-                    if line_idx < len(self._physical_line_map)
-                    else 0
-                )
-                if phy:
-                    result_append(
-                        result, f"{phy:>{self._physical_width}} ", style="dim yellow"
-                    )
-                else:
-                    result_append(result, " " * (self._physical_width + 1))
-        else:
-            result_append(result, gutter_pad)
+                in_block = False
+        return result
 
     @staticmethod
     def _build_line_paths(lines: list[str]) -> list[str]:
@@ -699,8 +616,7 @@ class JsonDiffApp(App):
 
         left_editor = self.query_one("#left-editor", DiffEditor)
         right_editor = self.query_one("#right-editor", DiffEditor)
-        left_editor._show_logical_line = True
-        right_editor._show_logical_line = False
+        right_editor._show_line_number = False
 
         # filler 행 계산: 한쪽만 빈 정렬 패딩 (양쪽 모두 빈 JSONL separator 제외)
         left_fillers = {
@@ -764,8 +680,7 @@ class JsonDiffApp(App):
         right_ej = self.query_one("#right-ej-editor", DiffEditor)
         left_ej._sync_target = right_ej
         right_ej._sync_target = left_ej
-        left_ej._show_logical_line = True
-        right_ej._show_logical_line = False
+        right_ej._show_line_number = False
 
         left_editor.focus()
 

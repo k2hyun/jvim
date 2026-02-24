@@ -1230,134 +1230,99 @@ class TestJsonlFillerSeparation:
 
 
 class TestDiffGutterLayout:
-    """DiffEditor 거터 레이아웃 (logical + physical line number) 테스트."""
+    """DiffEditor 거터 레이아웃 테스트."""
 
-    def test_physical_line_map(self):
-        """filler 제외 물리 라인 번호 매핑 검증."""
+    def test_jsonl_records_skip_fillers(self):
+        """JSONL 레코드 매핑이 filler를 건너뛴다."""
         editor = DiffEditor()
-        lines = ["{", '    "key": "value",', "", "}"]
-        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
-        filler_rows = {2}
-        editor.set_diff_data(lines, tags, filler_rows, [])
-        # filler=0, 나머지는 1-based 연속 번호
-        assert editor._physical_line_map == [1, 2, 0, 3]
-
-    def test_physical_line_map_no_fillers(self):
-        """filler 없으면 모든 행이 1-based 연속."""
-        editor = DiffEditor()
-        lines = ["{", '    "a": 1', "}"]
-        tags = [DiffTag.EQUAL, DiffTag.REPLACE, DiffTag.EQUAL]
-        editor.set_diff_data(lines, tags, set(), [])
-        assert editor._physical_line_map == [1, 2, 3]
-
-    def test_physical_line_map_multiple_fillers(self):
-        """다중 filler 행 매핑."""
-        editor = DiffEditor()
-        lines = ["{", "", '    "a": 1', "", "}"]
-        tags = [
-            DiffTag.EQUAL,
-            DiffTag.INSERT,
-            DiffTag.EQUAL,
-            DiffTag.INSERT,
-            DiffTag.EQUAL,
-        ]
-        filler_rows = {1, 3}
-        editor.set_diff_data(lines, tags, filler_rows, [])
-        assert editor._physical_line_map == [1, 0, 2, 0, 3]
-
-    def test_gutter_widths_left(self):
-        """왼쪽 에디터: logical + physical 거터 너비."""
-        editor = DiffEditor()
-        lines = [f"line{i}" for i in range(10)]
-        tags = [DiffTag.EQUAL] * 10
-        editor.set_diff_data(lines, tags, {2, 5}, [])
-        editor._show_logical_line = True
-        ln_width, rec_width, prefix_w = editor._gutter_widths()
-        # logical_width = max(3, len("10")) = 3, physical_width = max(3, len("8")) = 3
-        assert editor._logical_width == 3
-        assert editor._physical_width == 3
-        assert rec_width == 0
-        assert prefix_w == 3 + 1 + 3 + 1  # logical + space + physical + space
-
-    def test_gutter_widths_right(self):
-        """오른쪽 에디터: physical만 거터 너비."""
-        editor = DiffEditor()
-        lines = [f"line{i}" for i in range(10)]
-        tags = [DiffTag.EQUAL] * 10
-        editor.set_diff_data(lines, tags, {2, 5}, [])
-        editor._show_logical_line = False
-        ln_width, rec_width, prefix_w = editor._gutter_widths()
-        assert editor._physical_width == 3
-        assert editor._logical_width == 0
-        assert rec_width == 0
-        assert prefix_w == 3 + 1  # physical + space
-
-    def test_gutter_widths_diff(self):
-        """왼쪽과 오른쪽 거터 너비 차이 검증."""
-        editor = DiffEditor()
-        lines = [f"line{i}" for i in range(10)]
-        tags = [DiffTag.EQUAL] * 10
-        editor.set_diff_data(lines, tags, {2}, [])
-
-        editor._show_logical_line = True
-        _, _, left_prefix = editor._gutter_widths()
-
-        editor._show_logical_line = False
-        _, _, right_prefix = editor._gutter_widths()
-
-        # 왼쪽이 logical 너비 + 1(공백)만큼 더 넓음
-        assert left_prefix > right_prefix
-        assert (
-            left_prefix - right_prefix == editor._logical_width + 1
-            or left_prefix > right_prefix
-        )
-
-    def test_physical_line_map_jsonl(self):
-        """JSONL: 같은 레코드의 모든 줄이 같은 physical (원본 라인 번호)."""
-        editor = DiffEditor()
-        # record 1: lines 0-2, separator: line 3, record 2: lines 4-6
+        # record 1: lines 0-2, filler: 3 (within block), line 4: }
         lines = ["{", '    "a": 1', "}", "", "{", '    "b": 2', "}"]
         tags = [DiffTag.EQUAL] * 7
         editor.set_diff_data(lines, tags, set(), [], jsonl=True)
-        # record 1 → physical 1, separator → 0, record 2 → physical 2
-        assert editor._physical_line_map == [1, 1, 1, 0, 2, 2, 2]
+        records = editor._jsonl_line_records()
+        # record 1 첫 줄만 1, record 2 첫 줄만 2, 나머지 0
+        assert records[0] == 1
+        assert records[1] == 0
+        assert records[2] == 0
+        assert records[3] == 0  # separator
+        assert records[4] == 2
+        assert records[5] == 0
+        assert records[6] == 0
 
-    def test_physical_line_map_jsonl_with_fillers(self):
-        """JSONL + filler: filler 블록은 레코드 번호를 소비하지 않음."""
+    def test_jsonl_records_filler_within_block(self):
+        """레코드 내부 filler가 레코드 번호를 깨뜨리지 않는다."""
         editor = DiffEditor()
-        # record 1: lines 0-2, sep: 3, filler block: 4-6, sep: 7, record 2: 8-10
+        lines = ["{", '    "a": 1', "", "}"]
+        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
+        filler_rows = {2}
+        editor.set_diff_data(lines, tags, filler_rows, [], jsonl=True)
+        records = editor._jsonl_line_records()
+        # filler 건너뛰므로 { 부터 } 까지 하나의 블록
+        assert records[0] == 1  # { → record 1 시작
+        assert records[2] == 0  # filler → 건너뜀
+        assert records[3] == 0  # } → 같은 블록 계속
+
+    def test_jsonl_records_filler_block_skipped(self):
+        """전체가 filler인 블록은 레코드 번호를 소비하지 않는다."""
+        editor = DiffEditor()
         lines = ["{", '    "a": 1', "}", "", "", "", "", "", "{", '    "c": 3', "}"]
         tags = [
             DiffTag.EQUAL,
             DiffTag.EQUAL,
-            DiffTag.EQUAL,  # record 1
-            DiffTag.EQUAL,  # separator
-            DiffTag.INSERT,
-            DiffTag.INSERT,
-            DiffTag.INSERT,  # filler block
-            DiffTag.EQUAL,  # separator
             DiffTag.EQUAL,
             DiffTag.EQUAL,
-            DiffTag.EQUAL,  # record 2
+            DiffTag.INSERT,
+            DiffTag.INSERT,
+            DiffTag.INSERT,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
+            DiffTag.EQUAL,
         ]
         filler_rows = {4, 5, 6}
         editor.set_diff_data(lines, tags, filler_rows, [], jsonl=True)
-        assert editor._physical_line_map[0] == 1  # record 1
-        assert editor._physical_line_map[1] == 1
-        assert editor._physical_line_map[2] == 1
-        assert editor._physical_line_map[3] == 0  # separator
-        assert editor._physical_line_map[4] == 0  # filler
-        assert editor._physical_line_map[5] == 0  # filler
-        assert editor._physical_line_map[6] == 0  # filler
-        assert editor._physical_line_map[7] == 0  # separator
-        assert editor._physical_line_map[8] == 2  # record 2
-        assert editor._physical_line_map[9] == 2
-        assert editor._physical_line_map[10] == 2
+        records = editor._jsonl_line_records()
+        assert records[0] == 1  # record 1
+        assert records[4] == 0  # filler
+        assert records[8] == 2  # record 2 (filler 블록은 번호 소비 안 함)
 
-    def test_physical_line_map_non_jsonl_unchanged(self):
-        """비-JSONL: 기존 순차 번호 방식 유지."""
+    def test_gutter_widths_show_line_number(self):
+        """_show_line_number=True: LN + REC 거터 너비."""
         editor = DiffEditor()
-        lines = ["{", '    "a": 1', "", "}"]
-        tags = [DiffTag.EQUAL, DiffTag.EQUAL, DiffTag.INSERT, DiffTag.EQUAL]
-        editor.set_diff_data(lines, tags, {2}, [], jsonl=False)
-        assert editor._physical_line_map == [1, 2, 0, 3]
+        lines = ["{", '    "a": 1', "}", "", "{", '    "b": 2', "}"]
+        tags = [DiffTag.EQUAL] * 7
+        editor.set_diff_data(lines, tags, set(), [], jsonl=True)
+        editor._show_line_number = True
+        ln_width, rec_width, prefix_w = editor._gutter_widths()
+        assert ln_width == 3
+        assert rec_width == 2
+        assert prefix_w == ln_width + 1 + rec_width + 1
+
+    def test_gutter_widths_hide_line_number(self):
+        """_show_line_number=False: REC만 거터 너비."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "}", "", "{", '    "b": 2', "}"]
+        tags = [DiffTag.EQUAL] * 7
+        editor.set_diff_data(lines, tags, set(), [], jsonl=True)
+        editor._show_line_number = False
+        ln_width, rec_width, prefix_w = editor._gutter_widths()
+        assert rec_width == 2
+        assert prefix_w == rec_width + 1  # REC + space only
+
+    def test_gutter_widths_non_jsonl_hide(self):
+        """비-JSONL + _show_line_number=False: 거터 없음."""
+        editor = DiffEditor()
+        lines = ["{", '    "a": 1', "}"]
+        tags = [DiffTag.EQUAL] * 3
+        editor.set_diff_data(lines, tags, set(), [])
+        editor._show_line_number = False
+        _, _, prefix_w = editor._gutter_widths()
+        assert prefix_w == 0
+
+    def test_set_diff_data_sets_jsonl(self):
+        """set_diff_data(jsonl=True)가 self.jsonl을 설정한다."""
+        editor = DiffEditor()
+        editor.set_diff_data(["line"], [DiffTag.EQUAL], set(), [], jsonl=True)
+        assert editor.jsonl is True
+        editor.set_diff_data(["line"], [DiffTag.EQUAL], set(), [], jsonl=False)
+        assert editor.jsonl is False

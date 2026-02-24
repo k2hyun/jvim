@@ -194,6 +194,8 @@ class JsonEditor(
         self._tab_index: int = -1  # -1: 공통 접두사, 0+: 후보 순회 중
         # _ensure_cursor_visible 조기 종료 캐시
         self._last_ecv_state: tuple | None = None
+        # 거터 설정
+        self._show_line_number: bool = True  # False면 LN 컬럼 숨김
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
@@ -342,10 +344,14 @@ class JsonEditor(
         """Return ``(ln_width, rec_width, prefix_width)``.
 
         *rec_width* is 0 when not in JSONL mode.
+        *ln_width* is always computed but excluded from *prefix_width* when
+        ``_show_line_number`` is False.
         """
         ln_width = max(3, len(str(len(self.lines))))
         if not self.jsonl:
-            return ln_width, 0, ln_width + 1
+            if self._show_line_number:
+                return ln_width, 0, ln_width + 1
+            return ln_width, 0, 0
         # 캐시가 있으면 max() 활용, 없으면 라인 순회 fallback
         cache = self._jsonl_records_cache
         if cache:
@@ -361,7 +367,9 @@ class JsonEditor(
                 else:
                     in_block = False
         rec_width = max(2, len(str(max(1, rec_count))))
-        return ln_width, rec_width, rec_width + 1 + ln_width + 1
+        if self._show_line_number:
+            return ln_width, rec_width, rec_width + 1 + ln_width + 1
+        return ln_width, rec_width, rec_width + 1
 
     def _render_gutter(
         self,
@@ -378,7 +386,8 @@ class JsonEditor(
     ):
         """거터 렌더링 (라인 번호 + JSONL 레코드 번호)."""
         if si == 0 or rows_used == 0:
-            result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
+            if self._show_line_number:
+                result_append(result, f"{line_idx + 1:>{ln_width}} ", style="dim cyan")
             if rec_width:
                 rec_num = jsonl_records[line_idx]
                 if rec_num:
@@ -584,9 +593,12 @@ class JsonEditor(
                 if rec_start_line >= 0:
                     rec_num = jsonl_records[rec_start_line]
                     # Show floating header
-                    header = (
-                        f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
-                    )
+                    if self._show_line_number:
+                        header = (
+                            f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
+                        )
+                    else:
+                        header = f"{rec_num:>{rec_width}} ↓"
                     result_append(result, header, style="bold cyan on grey23")
                     result_append(result, " " * (width - len(header)) + "\n")
                     rows_used += 1
