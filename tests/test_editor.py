@@ -2423,3 +2423,358 @@ class TestMultiFileNavigation:
         )
         assert result.returncode != 0
         assert "binary file" in result.stderr
+
+
+class TestCountPrefix:
+    """숫자 접두사(count prefix) 테스트."""
+
+    def _key(self, char, key=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(key=key or char, character=char)
+
+    # -- count 수집 --
+
+    def test_digit_accumulates(self):
+        """1-9로 시작하면 _count_buf에 누적."""
+        editor = JsonEditor("line0\nline1\nline2\nline3\nline4")
+        editor._handle_normal(self._key("3"))
+        assert editor._count_buf == "3"
+        editor._handle_normal(self._key("2"))
+        assert editor._count_buf == "32"
+
+    def test_bare_zero_moves_to_col0(self):
+        """count 없이 0 → 줄 시작 이동."""
+        editor = JsonEditor("hello world")
+        editor.cursor_col = 5
+        editor._handle_normal(self._key("0"))
+        assert editor.cursor_col == 0
+        assert editor._count_buf == ""
+
+    def test_zero_after_digit_accumulates(self):
+        """숫자 뒤 0은 count에 누적."""
+        editor = JsonEditor("line\n" * 30)
+        editor._handle_normal(self._key("1"))
+        editor._handle_normal(self._key("0"))
+        assert editor._count_buf == "10"
+
+    def test_escape_clears_count(self):
+        """Escape → count 리셋."""
+        editor = JsonEditor("hello")
+        editor._handle_normal(self._key("5"))
+        assert editor._count_buf == "5"
+        editor._handle_normal(self._key(None, "escape"))
+        assert editor._count_buf == ""
+
+    # -- count + 이동 --
+
+    def test_count_j(self):
+        """3j → 3줄 아래."""
+        editor = JsonEditor("line0\nline1\nline2\nline3\nline4")
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("3"))
+        editor._handle_normal(self._key("j"))
+        editor._clamp_cursor()
+        assert editor.cursor_row == 3
+
+    def test_count_k(self):
+        """2k → 2줄 위."""
+        editor = JsonEditor("line0\nline1\nline2\nline3\nline4")
+        editor.cursor_row = 4
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("k"))
+        editor._clamp_cursor()
+        assert editor.cursor_row == 2
+
+    def test_count_h(self):
+        """3h → 3칸 왼쪽."""
+        editor = JsonEditor("hello world")
+        editor.cursor_col = 5
+        editor._handle_normal(self._key("3"))
+        editor._handle_normal(self._key("h"))
+        editor._clamp_cursor()
+        assert editor.cursor_col == 2
+
+    def test_count_l(self):
+        """4l → 4칸 오른쪽."""
+        editor = JsonEditor("hello world")
+        editor.cursor_col = 0
+        editor._handle_normal(self._key("4"))
+        editor._handle_normal(self._key("l"))
+        editor._clamp_cursor()
+        assert editor.cursor_col == 4
+
+    def test_count_w(self):
+        """2w → 단어 2개 전진."""
+        editor = JsonEditor("aaa bbb ccc ddd")
+        editor.cursor_col = 0
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("w"))
+        assert editor.cursor_col == 8  # "ccc" 시작
+
+    def test_count_b(self):
+        """2b → 단어 2개 후진."""
+        editor = JsonEditor("aaa bbb ccc ddd")
+        editor.cursor_col = 12  # "ddd"
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("b"))
+        assert editor.cursor_col == 4  # "bbb" 시작
+
+    def test_count_G(self):
+        """5G → 5번째 줄로 이동."""
+        editor = JsonEditor("\n".join([f"line{i}" for i in range(10)]))
+        editor._handle_normal(self._key("5"))
+        editor._handle_normal(self._key("G"))
+        editor._clamp_cursor()
+        assert editor.cursor_row == 4  # 0-indexed
+
+    def test_G_without_count(self):
+        """G (count 없음) → 마지막 줄."""
+        editor = JsonEditor("\n".join([f"line{i}" for i in range(10)]))
+        editor._handle_normal(self._key("G"))
+        editor._clamp_cursor()
+        assert editor.cursor_row == 9
+
+    # -- count + 편집 --
+
+    def test_count_x(self):
+        """3x → 3문자 삭제."""
+        editor = JsonEditor("abcdefgh")
+        editor.cursor_col = 2
+        editor._handle_normal(self._key("3"))
+        editor._handle_normal(self._key("x"))
+        assert editor.lines[0] == "abfgh"
+
+    def test_count_dd(self):
+        """3dd → 3줄 삭제."""
+        editor = JsonEditor("line0\nline1\nline2\nline3\nline4")
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("3"))
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        assert len(editor.lines) == 2
+        assert editor.lines == ["line0", "line4"]
+        assert len(editor.yank_buffer) == 3
+
+    def test_count_yy(self):
+        """2yy → 2줄 yank."""
+        editor = JsonEditor("line0\nline1\nline2\nline3")
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("y"))
+        editor._handle_pending("y", "y")
+        assert editor.yank_buffer == ["line1", "line2"]
+        assert "2 lines yanked" in editor.status_msg
+
+    def test_count_p(self):
+        """2p → 2회 paste."""
+        editor = JsonEditor("line0\nline1")
+        editor._yank_type = "line"
+        editor.yank_buffer = ["new"]
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("p"))
+        assert editor.lines.count("new") == 2
+
+    def test_count_J(self):
+        """2J → 2회 join."""
+        editor = JsonEditor("aaa\nbbb\nccc\nddd")
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("J"))
+        # 2회 join: "aaa bbb" → "aaa bbb ccc"
+        assert editor.lines[0] == "aaa bbb ccc"
+
+    # -- d{count}d 패턴 --
+
+    def test_d3d_pattern(self):
+        """d3d → 3줄 삭제."""
+        editor = JsonEditor("line0\nline1\nline2\nline3\nline4")
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("d"))
+        # pending 상태에서 숫자 입력
+        editor._handle_pending("3", "3")
+        assert editor._count_buf == "3"
+        assert editor.pending == "d"  # pending 유지
+        # 'd' 입력으로 dd 완성
+        editor._handle_pending("d", "d")
+        assert len(editor.lines) == 2
+        assert editor.lines == ["line3", "line4"]
+
+    def test_y2y_pattern(self):
+        """y2y → 2줄 yank."""
+        editor = JsonEditor("line0\nline1\nline2\nline3")
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("y"))
+        editor._handle_pending("2", "2")
+        editor._handle_pending("y", "y")
+        assert editor.yank_buffer == ["line0", "line1"]
+
+    # -- count 소비 후 리셋 --
+
+    def test_count_consumed_after_use(self):
+        """count 사용 후 _count_buf 비어야 함."""
+        editor = JsonEditor("line0\nline1\nline2")
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("j"))
+        assert editor._count_buf == ""
+
+    # -- fold-aware dd --
+
+    def test_dd_on_fold_header_deletes_block(self):
+        """fold 헤더에서 dd → 전체 블록 삭제."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        # line 0: {
+        # line 1:     "a": {
+        # line 2:         "b": 1
+        # line 3:     },
+        # line 4:     "c": 2
+        # line 5: }
+        editor = JsonEditor(content)
+        editor._folds[1] = 3  # fold "a" block
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        # "a" 블록 (line 1-3) 삭제됨
+        assert len(editor.yank_buffer) == 3
+        assert "a" in editor.yank_buffer[0]
+        assert len(editor.lines) == 3  # {, "c": 2, }
+
+    def test_yy_on_fold_header_yanks_block(self):
+        """fold 헤더에서 yy → 전체 블록 yank."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("y"))
+        editor._handle_pending("y", "y")
+        assert len(editor.yank_buffer) == 3
+        assert "3 lines yanked" in editor.status_msg
+
+    def test_dd_on_non_fold_line(self):
+        """fold가 아닌 일반 줄 dd → 1줄만 삭제."""
+        content = "line0\nline1\nline2"
+        editor = JsonEditor(content)
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        assert editor.lines == ["line0", "line2"]
+        assert editor.yank_buffer == ["line1"]
+
+    # -- count + fold-aware --
+
+    def test_count_dd_with_fold(self):
+        """2dd에서 첫 줄이 fold 헤더 → fold 블록 + 다음 줄 삭제."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("2"))
+        editor._handle_normal(self._key("d"))
+        editor._handle_pending("d", "d")
+        # fold block (1-3) + line 4 삭제
+        assert len(editor.yank_buffer) == 4
+        assert len(editor.lines) == 2  # { and }
+
+    # -- gg with count --
+
+    def test_gg_with_count(self):
+        """3gg → 3번째 줄로 이동."""
+        editor = JsonEditor("\n".join([f"line{i}" for i in range(10)]))
+        editor._handle_normal(self._key("3"))
+        editor._handle_normal(self._key("g"))
+        editor._handle_pending("g", "g")
+        editor._clamp_cursor()
+        assert editor.cursor_row == 2
+
+    # -- fold-aware J --
+
+    def test_J_on_fold_header(self):
+        """fold 헤더에서 J → fold 내부 제거 후 다음 보이는 줄과 join."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        # line 0: {
+        # line 1:     "a": {       ← fold header
+        # line 2:         "b": 1   ← hidden
+        # line 3:     },           ← fold end
+        # line 4:     "c": 2
+        # line 5: }
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor.cursor_row = 1
+        editor._join_lines()
+        # fold 내부(line 2-3) 제거 + line 4("c": 2)와 join
+        assert '"a": {' in editor.lines[1]
+        assert '"c": 2' in editor.lines[1]
+        assert 1 not in editor._folds
+
+    def test_J_on_non_fold_line(self):
+        """일반 줄에서 J → 기존 동작 유지."""
+        editor = JsonEditor("aaa\nbbb\nccc")
+        editor.cursor_row = 0
+        editor._join_lines()
+        assert editor.lines[0] == "aaa bbb"
+
+    # -- fold-aware o --
+
+    def test_o_on_fold_header(self):
+        """fold 헤더에서 o → fold end 뒤에 새 줄 삽입."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor.cursor_row = 1
+        editor._handle_normal(self._key("o"))
+        # fold end(line 3: "},") 뒤인 line 4에 삽입
+        # 새 줄은 fold end의 indent 기준
+        assert editor.cursor_row == 4
+        assert editor._mode == EditorMode.INSERT
+        # 원래 "c": 2는 한 줄 밀림
+        assert '"c": 2' in editor.lines[5]
+
+    def test_o_on_non_fold_line(self):
+        """일반 줄에서 o → 기존 동작 유지."""
+        editor = JsonEditor("aaa\nbbb")
+        editor.cursor_row = 0
+        editor._handle_normal(self._key("o"))
+        assert editor.cursor_row == 1
+        assert editor._mode == EditorMode.INSERT
+        assert editor.lines[2] == "bbb"
+
+    # -- fold-aware p (line paste) --
+
+    def test_p_line_on_fold_header(self):
+        """fold 헤더에서 p (line paste) → fold end 뒤에 삽입."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor._yank_type = "line"
+        editor.yank_buffer = ['    "new": true']
+        editor.cursor_row = 1
+        editor._paste_after()
+        # fold end(line 3) 뒤에 삽입 → line 4
+        assert editor.lines[4] == '    "new": true'
+        assert editor.cursor_row == 4
+        # 원래 "c": 2는 line 5로 밀림
+        assert '"c": 2' in editor.lines[5]
+
+    def test_p_line_on_non_fold_line(self):
+        """일반 줄에서 p (line paste) → 기존 동작 유지."""
+        editor = JsonEditor("aaa\nbbb")
+        editor._yank_type = "line"
+        editor.yank_buffer = ["new"]
+        editor.cursor_row = 0
+        editor._paste_after()
+        assert editor.lines[1] == "new"
+        assert editor.cursor_row == 1
+
+    def test_p_char_on_fold_header(self):
+        """fold 헤더에서 p (char paste) → 기존 인라인 동작 유지."""
+        content = '{\n    "a": {\n        "b": 1\n    },\n    "c": 2\n}'
+        editor = JsonEditor(content)
+        editor._folds[1] = 3
+        editor._yank_type = "char"
+        editor.yank_buffer = ["X"]
+        editor.cursor_row = 1
+        editor.cursor_col = 0
+        editor._paste_after()
+        # char paste는 fold와 무관하게 인라인 삽입
+        assert editor.lines[1].startswith(" X")

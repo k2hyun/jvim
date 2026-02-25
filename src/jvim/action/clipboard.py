@@ -45,11 +45,16 @@ class ClipboardMixin:
                 self.cursor_row += inserted
                 self.cursor_col = len(parts[-1]) - 1
             return
+        # fold-aware: fold 헤더이면 fold end 뒤에 삽입
+        insert_after = self.cursor_row
+        fold_end = self._folds.get(self.cursor_row)
+        if fold_end is not None:
+            insert_after = fold_end
         inserted = len(self.yank_buffer)
         for i, line in enumerate(self.yank_buffer):
-            self.lines.insert(self.cursor_row + 1 + i, line)
-        self._adjust_line_indices(self.cursor_row + 1, inserted)
-        self.cursor_row += 1
+            self.lines.insert(insert_after + 1 + i, line)
+        self._adjust_line_indices(insert_after + 1, inserted)
+        self.cursor_row = insert_after + 1
         self.cursor_col = 0
 
     def _paste_before(self) -> None:
@@ -88,11 +93,33 @@ class ClipboardMixin:
     def _join_lines(self) -> None:
         if self.cursor_row >= len(self.lines) - 1:
             return
-        self._save_undo()
-        cur = self.lines[self.cursor_row].rstrip()
-        nxt = self.lines[self.cursor_row + 1].lstrip()
-        self.cursor_col = len(cur)
-        self.lines[self.cursor_row] = cur + " " + nxt
-        deleted_at = self.cursor_row + 1
-        self.lines.pop(deleted_at)
-        self._adjust_line_indices(deleted_at, -1)
+        # fold-aware: fold 헤더이면 fold 전체를 제거한 뒤 다음 보이는 줄과 join
+        fold_end = self._folds.get(self.cursor_row)
+        if fold_end is not None:
+            next_row = fold_end + 1
+            if next_row >= len(self.lines):
+                return
+            self._save_undo()
+            cur = self.lines[self.cursor_row].rstrip()
+            # fold 내부 행 제거 (cursor_row+1 ~ fold_end)
+            del self.lines[self.cursor_row + 1 : next_row]
+            removed = fold_end - self.cursor_row
+            del self._folds[self.cursor_row]
+            self._folded_lines_dirty = True
+            self._adjust_line_indices(self.cursor_row + 1, -removed)
+            # 이제 cursor_row+1 = 원래 next_row (fold 뒤 첫 줄)
+            nxt = self.lines[self.cursor_row + 1].lstrip()
+            self.cursor_col = len(cur)
+            self.lines[self.cursor_row] = cur + " " + nxt
+            deleted_at = self.cursor_row + 1
+            self.lines.pop(deleted_at)
+            self._adjust_line_indices(deleted_at, -1)
+        else:
+            self._save_undo()
+            cur = self.lines[self.cursor_row].rstrip()
+            nxt = self.lines[self.cursor_row + 1].lstrip()
+            self.cursor_col = len(cur)
+            self.lines[self.cursor_row] = cur + " " + nxt
+            deleted_at = self.cursor_row + 1
+            self.lines.pop(deleted_at)
+            self._adjust_line_indices(deleted_at, -1)

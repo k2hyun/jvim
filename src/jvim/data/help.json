@@ -1,4 +1,14 @@
 {
+    "Count Prefix": {
+        "{N}motion": "repeat motion N times (e.g., 5j)",
+        "{N}G": "go to line N",
+        "{N}dd": "delete N lines (fold-aware)",
+        "{N}yy": "yank N lines (fold-aware)",
+        "d{N}d": "delete N lines (e.g., d3d)",
+        "{N}x": "delete N chars",
+        "{N}p {N}P": "paste N times",
+        "{N}J": "join N times"
+    },
     "Movement": {
         "h j k l": "left/down/up/right",
         "w b": "word forward/backward",

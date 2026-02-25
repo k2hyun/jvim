@@ -141,6 +141,7 @@ class JsonEditor(
         self._mode: EditorMode = EditorMode.NORMAL
         self.command_buffer: str = ""
         self.pending: str = ""
+        self._count_buf: str = ""
         self.status_msg: str = ""
         self.undo_stack: deque[tuple[list[str], int, int]] = deque(maxlen=200)
         self.redo_stack: deque[tuple[list[str], int, int]] = deque(maxlen=200)
@@ -787,9 +788,11 @@ class JsonEditor(
             if read_only:
                 result_append(result, " RO ", style="bold white on grey37")
 
+            count_buf = self._count_buf
             pending = self.pending
-            if pending:
-                result_append(result, f"  {pending}", style="bold yellow")
+            prefix_str = count_buf + pending
+            if prefix_str:
+                result_append(result, f"  {prefix_str}", style="bold yellow")
 
             status_msg = self.status_msg
             pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
