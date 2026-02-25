@@ -2809,3 +2809,85 @@ class TestCountPrefix:
         editor._paste_after()
         # char paste는 fold와 무관하게 인라인 삽입
         assert editor.lines[1].startswith(" X")
+
+
+class TestSearchWordUnderCursor:
+    """* / # 커서 단어 검색 테스트."""
+
+    def _key(self, char, key=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(key=key or char, character=char)
+
+    def test_get_word_under_cursor(self):
+        """커서 위치의 단어를 올바르게 추출."""
+        editor = JsonEditor('"hello_world": 123')
+        editor.cursor_col = 3  # 'l' in hello_world
+        assert editor._get_word_under_cursor() == "hello_world"
+
+    def test_get_word_under_cursor_no_word(self):
+        """단어가 아닌 위치에서 빈 문자열 반환."""
+        editor = JsonEditor('  "key": "value"')
+        editor.cursor_col = 0  # 공백
+        assert editor._get_word_under_cursor() == ""
+
+    def test_star_forward_search(self):
+        """* → 커서 단어를 정방향 검색하여 다음 매치로 이동."""
+        content = '"name": "foo",\n"age": 10,\n"name": "bar"'
+        editor = JsonEditor(content)
+        editor.cursor_row = 0
+        editor.cursor_col = 1  # 'n' in "name"
+        editor._handle_normal(self._key("*"))
+        # 다음 "name" 매치(line 2)로 이동해야 함
+        assert editor.cursor_row == 2
+        assert editor._search_buffer == "name"
+        assert editor._search_forward is True
+
+    def test_hash_backward_search(self):
+        """# → 커서 단어를 역방향 검색하여 이전 매치로 이동."""
+        content = '"name": "foo",\n"age": 10,\n"name": "bar"'
+        editor = JsonEditor(content)
+        editor.cursor_row = 2
+        editor.cursor_col = 1  # 'n' in "name" (line 2)
+        editor._handle_normal(self._key("#"))
+        # 이전 "name" 매치(line 0)로 이동해야 함
+        assert editor.cursor_row == 0
+        assert editor._search_forward is False
+
+    def test_star_no_word_under_cursor(self):
+        """단어가 아닌 위치에서 * → 상태 메시지 표시."""
+        editor = JsonEditor('  "key": "value"')
+        editor.cursor_col = 0
+        editor._handle_normal(self._key("*"))
+        assert editor.status_msg == "No word under cursor"
+
+    def test_star_then_n_continues(self):
+        """* 후 n으로 이어 탐색."""
+        content = "aaa bbb aaa ccc aaa"
+        editor = JsonEditor(content)
+        editor.cursor_col = 0  # 'a' in first "aaa"
+        editor._handle_normal(self._key("*"))
+        # 두 번째 "aaa" (col 8)로 이동
+        assert editor.cursor_col == 8
+        editor._handle_normal(self._key("n"))
+        # 세 번째 "aaa" (col 16)로 이동
+        assert editor.cursor_col == 16
+
+    def test_star_adds_to_search_history(self):
+        """* 검색이 히스토리에 추가됨."""
+        editor = JsonEditor("hello world hello")
+        editor.cursor_col = 0
+        editor._handle_normal(self._key("*"))
+        assert "hello" in editor._search_history
+
+    def test_hash_then_N_continues(self):
+        """# 후 N으로 이어 역방향 탐색."""
+        content = "aaa bbb aaa ccc aaa"
+        editor = JsonEditor(content)
+        editor.cursor_col = 16  # last "aaa"
+        editor._handle_normal(self._key("#"))
+        # 두 번째 "aaa" (col 8)로 이동
+        assert editor.cursor_col == 8
+        editor._handle_normal(self._key("N"))
+        # 첫 번째 "aaa" (col 0)로 이동
+        assert editor.cursor_col == 0

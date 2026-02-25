@@ -18,6 +18,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **Syntax highlighting** - JSON-aware colorization
 - **JSON validation** - Real-time validation with error reporting
 - **JSONPath search** - Search using JSONPath expressions (`$.foo.bar`)
+- **Word search** - Search word under cursor with `*` (forward) and `#` (backward)
 - **JSONL support** - Edit JSON Lines files with smart formatting
 - **Embedded JSON editing** - Edit JSON strings within JSON with nested level support
 - **Visual mode** - Character-wise (`v`) and line-wise (`V`) selection with `d`/`y`/`c` operators

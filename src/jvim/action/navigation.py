@@ -38,6 +38,20 @@ class NavigationMixin:
             col -= 1
         self.cursor_col = col
 
+    def _get_word_under_cursor(self) -> str:
+        """커서 위치의 단어를 추출. 단어가 아니면 빈 문자열 반환."""
+        line = self.lines[self.cursor_row]
+        col = self.cursor_col
+        if col >= len(line) or not (line[col].isalnum() or line[col] == "_"):
+            return ""
+        start = col
+        while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+            start -= 1
+        end = col
+        while end < len(line) - 1 and (line[end + 1].isalnum() or line[end + 1] == "_"):
+            end += 1
+        return line[start : end + 1]
+
     def _jump_matching_bracket(self) -> None:
         line = self.lines[self.cursor_row]
         if self.cursor_col >= len(line):

@@ -27,6 +27,7 @@
         "n": "next match",
         "N": "previous match",
         "Up/Down": "search history",
+        "* #": "search word under cursor (forward/backward)",
         "\\c \\C": "case insensitive/sensitive",
         "smartcase": "lowercase only → case insensitive",
         "/$. /$[": "JSONPath search (auto-detect)",

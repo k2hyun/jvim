@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 class NormalMixin:
     """Normal mode key handler and pending multi-char handler for JsonEditor."""
@@ -293,6 +295,21 @@ class NormalMixin:
         elif char == "N":
             self._count_buf = ""
             self._goto_prev_match()
+        elif char == "*" or char == "#":
+            self._count_buf = ""
+            word = self._get_word_under_cursor()
+            if not word:
+                self.status_msg = "No word under cursor"
+                return True
+            self._search_buffer = re.escape(word)
+            self._search_forward = char == "*"
+            self._add_to_search_history(self._search_buffer)
+            self._execute_search()
+            if self._search_matches:
+                if char == "*":
+                    self._goto_next_match()
+                else:
+                    self._goto_prev_match()
         elif char == ":":
             self._count_buf = ""
             self._visual_mode = ""
