@@ -21,6 +21,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **JSONL support** - Edit JSON Lines files with smart formatting
 - **Embedded JSON editing** - Edit JSON strings within JSON with nested level support
 - **Visual mode** - Character-wise (`v`) and line-wise (`V`) selection with `d`/`y`/`c` operators
+- **Count prefix** - Vim-style numeric prefixes (`5j`, `3dd`, `d3d`) with fold-aware line operations
 - **Folding** - Collapse/expand JSON blocks and long string values
 - **Bracket matching** - Jump to matching brackets with `%`
 - **Undo/Redo** - Full undo history
