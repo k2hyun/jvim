@@ -301,6 +301,9 @@ Also available as `jvd` shortcut.
 - **Auto-fold** - On load, all structure is folded, then only diff sections are unfolded
 - **Hunk navigation** - `]c` next hunk, `[c` previous hunk (wraps around)
 - **Panel switch** - `Tab` to toggle focus between left and right panels
+- **Active panel indicator** - Title bar highlights the focused panel
+- **Cursor sync** - Cursor position syncs between panels
+- **Line numbers** - Logical line number (left) and JSONL record number (both panels)
 - **Embedded JSON diff** - `ej` to diff embedded JSON strings within each panel
 
 ## Keybindings

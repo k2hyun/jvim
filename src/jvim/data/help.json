@@ -89,6 +89,7 @@
         ":ig": "show ignored paths",
         ":ig!": "clear all ignored paths",
         ":uig <path>": "unignore JSONPath",
-        ":uig + Tab": "tab-complete from ignored list"
+        ":uig + Tab": "tab-complete from ignored list",
+        "Tab": "switch left/right panel"
     }
 }
