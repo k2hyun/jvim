@@ -379,27 +379,8 @@ class NormalMixin:
 
     # -- Pending multi-char ------------------------------------------------
 
-    def _handle_pending(self, char: str, key: str) -> None:
-        if key == "escape" or not char:
-            self.pending = ""
-            self._count_buf = ""
-            self.status_msg = ""
-            self._dot_stop()
-            return
-
-        # pending 상태에서 숫자 입력 → count에 누적 (d3d 패턴)
-        if char.isdigit() and self.pending in ("d", "y", "c"):
-            self._count_buf += char
-            return
-
-        combo = self.pending + char
-        self.pending = ""
-
-        if self.read_only and combo not in ("yy", "gg", "ej"):
-            self._count_buf = ""
-            self.status_msg = "[readonly]"
-            return
-
+    def _pending_delete(self, combo: str) -> bool:
+        """d로 시작하는 pending 명령 처리. 처리했으면 True 반환."""
         if combo == "dd":
             count = self._consume_count()
             self._save_undo()
@@ -417,8 +398,7 @@ class NormalMixin:
                 if fold_end is not None:
                     block = self.lines[self.cursor_row : fold_end + 1]
                     yanked.extend(block)
-                    del self._folds[self.cursor_row]
-                    self._folded_lines_dirty = True
+                    self._open_fold(self.cursor_row)
                     block_len = len(block)
                     del self.lines[self.cursor_row : self.cursor_row + block_len]
                     if not self.lines:
@@ -442,20 +422,17 @@ class NormalMixin:
             n = len(yanked)
             self.status_msg = f"{n} line{'s' if n > 1 else ''} deleted"
             self._dot_stop()
-
         elif combo == "dw":
             self._count_buf = ""
             self._save_undo()
             self._delete_word()
             self._dot_stop()
-
         elif combo == "d$":
             self._count_buf = ""
             self._save_undo()
             line = self.lines[self.cursor_row]
             self.lines[self.cursor_row] = line[: self.cursor_col]
             self._dot_stop()
-
         elif combo == "d0":
             self._count_buf = ""
             self._save_undo()
@@ -463,14 +440,17 @@ class NormalMixin:
             self.lines[self.cursor_row] = line[self.cursor_col :]
             self.cursor_col = 0
             self._dot_stop()
+        else:
+            return False
+        return True
 
-        elif combo == "cw":
+    def _pending_change(self, combo: str) -> bool:
+        """c로 시작하는 pending 명령 처리. 처리했으면 True 반환."""
+        if combo == "cw":
             self._count_buf = ""
             self._save_undo()
             self._delete_word()
             self._enter_insert()
-            # recording continues into insert mode
-
         elif combo == "cc":
             self._count_buf = ""
             self._save_undo()
@@ -480,29 +460,79 @@ class NormalMixin:
             self.lines[self.cursor_row] = " " * indent
             self.cursor_col = indent
             self._enter_insert()
-            # recording continues into insert mode
+        else:
+            return False
+        return True
 
-        elif combo == "yy":
-            count = self._consume_count()
-            self._yank_type = "line"
-            yanked = []
-            row = self.cursor_row
-            for _ in range(count):
-                if row >= len(self.lines):
-                    break
-                # fold-aware: fold 헤더이면 전체 블록 yank
-                fold_end = self._get_fold_end(row)
-                if fold_end is not None:
-                    yanked.extend(self.lines[row : fold_end + 1])
-                    row = fold_end + 1
-                else:
-                    yanked.append(self.lines[row])
-                    row += 1
-            self.yank_buffer = yanked
-            n = len(yanked)
-            self.status_msg = f"{n} line{'s' if n > 1 else ''} yanked"
+    def _pending_yank(self, combo: str) -> bool:
+        """yy pending 명령 처리. 처리했으면 True 반환."""
+        if combo != "yy":
+            return False
+        count = self._consume_count()
+        self._yank_type = "line"
+        yanked: list[str] = []
+        row = self.cursor_row
+        for _ in range(count):
+            if row >= len(self.lines):
+                break
+            # fold-aware: fold 헤더이면 전체 블록 yank
+            fold_end = self._get_fold_end(row)
+            if fold_end is not None:
+                yanked.extend(self.lines[row : fold_end + 1])
+                row = fold_end + 1
+            else:
+                yanked.append(self.lines[row])
+                row += 1
+        self.yank_buffer = yanked
+        n = len(yanked)
+        self.status_msg = f"{n} line{'s' if n > 1 else ''} yanked"
+        return True
 
-        elif combo == "gg":
+    def _pending_fold(self, combo: str) -> bool:
+        """z로 시작하는 fold 명령 처리. 처리했으면 True 반환."""
+        fold_cmds = {
+            "za": lambda: self._toggle_fold(self.cursor_row),
+            "zo": lambda: self._open_fold(self.cursor_row),
+            "zc": lambda: self._close_fold(self.cursor_row),
+            "zM": self._fold_all,
+            "zR": self._unfold_all,
+        }
+        handler = fold_cmds.get(combo)
+        if handler is None:
+            return False
+        self._count_buf = ""
+        handler()
+        return True
+
+    def _handle_pending(self, char: str, key: str) -> None:
+        if key == "escape" or not char:
+            self.pending = ""
+            self._count_buf = ""
+            self.status_msg = ""
+            self._dot_stop()
+            return
+
+        # pending 상태에서 숫자 입력 → count에 누적 (d3d 패턴)
+        if char.isdigit() and self.pending in ("d", "y", "c"):
+            self._count_buf += char
+            return
+
+        combo = self.pending + char
+        self.pending = ""
+
+        if self.read_only and combo not in ("yy", "gg", "ej"):
+            self._count_buf = ""
+            self.status_msg = "[readonly]"
+            return
+
+        if self._pending_delete(combo):
+            return
+        if self._pending_change(combo):
+            return
+        if self._pending_yank(combo):
+            return
+
+        if combo == "gg":
             count = self._consume_count()
             if count > 1:
                 self.cursor_row = count - 1
@@ -510,8 +540,9 @@ class NormalMixin:
                 self.cursor_row = 0
             self.cursor_col = 0
             self._scroll_cursor_to_top()
+            return
 
-        elif len(combo) == 2 and combo[0] == "r":
+        if len(combo) == 2 and combo[0] == "r":
             self._count_buf = ""
             self._save_undo()
             line = self.lines[self.cursor_row]
@@ -520,29 +551,16 @@ class NormalMixin:
                     line[: self.cursor_col] + combo[1] + line[self.cursor_col + 1 :]
                 )
             self._dot_stop()
+            return
 
-        elif combo == "ej":
+        if combo == "ej":
             self._count_buf = ""
             self._edit_embedded_json()
+            return
 
-        # fold 명령어
-        elif combo == "za":
-            self._count_buf = ""
-            self._toggle_fold(self.cursor_row)
-        elif combo == "zo":
-            self._count_buf = ""
-            self._open_fold(self.cursor_row)
-        elif combo == "zc":
-            self._count_buf = ""
-            self._close_fold(self.cursor_row)
-        elif combo == "zM":
-            self._count_buf = ""
-            self._fold_all()
-        elif combo == "zR":
-            self._count_buf = ""
-            self._unfold_all()
+        if self._pending_fold(combo):
+            return
 
-        else:
-            self._count_buf = ""
-            self._dot_stop()
-            self.status_msg = f"unknown: {combo}"
+        self._count_buf = ""
+        self._dot_stop()
+        self.status_msg = f"unknown: {combo}"
