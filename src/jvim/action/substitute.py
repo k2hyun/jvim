@@ -136,6 +136,34 @@ class SubstituteMixin:
             return value
         return json.dumps(value, ensure_ascii=False)
 
+    @staticmethod
+    def _find_unique_position(
+        lines,
+        data,
+        json_path,
+        key_index,
+        used,
+        return_key=False,
+        start_line=0,
+    ):
+        """중복 없는 위치를 찾아 반환. 없으면 None."""
+        pos = find_json_value_position_fast(
+            lines, data, json_path, key_index, start_line, return_key=return_key
+        )
+        while pos and (pos[0], pos[1]) in used:
+            pos = find_json_value_position_fast(
+                lines,
+                data,
+                json_path,
+                key_index,
+                pos[0],
+                pos[1] + 1,
+                return_key=return_key,
+            )
+        if pos:
+            used.add((pos[0], pos[1]))
+        return pos
+
     def _execute_substitute_jsonpath(
         self, pattern: str, replacement: str, flags_str: str
     ) -> None:
@@ -195,21 +223,10 @@ class SubstituteMixin:
             positions: list[tuple[int, int, int]] = []
             used: set[tuple[int, int]] = set()
             for json_path in key_results:
-                pos = find_json_value_position_fast(
-                    self.lines, data, json_path, key_index, return_key=True
+                pos = self._find_unique_position(
+                    self.lines, data, json_path, key_index, used, return_key=True
                 )
-                while pos and (pos[0], pos[1]) in used:
-                    pos = find_json_value_position_fast(
-                        self.lines,
-                        data,
-                        json_path,
-                        key_index,
-                        pos[0],
-                        pos[1] + 1,
-                        return_key=True,
-                    )
                 if pos:
-                    used.add((pos[0], pos[1]))
                     positions.append(pos)
 
             if not positions:
@@ -235,15 +252,10 @@ class SubstituteMixin:
             positions = []
             used = set()
             for json_path in leaf_results:
-                pos = find_json_value_position_fast(
-                    self.lines, data, json_path, key_index
+                pos = self._find_unique_position(
+                    self.lines, data, json_path, key_index, used
                 )
-                while pos and (pos[0], pos[1]) in used:
-                    pos = find_json_value_position_fast(
-                        self.lines, data, json_path, key_index, pos[0], pos[1] + 1
-                    )
                 if pos:
-                    used.add((pos[0], pos[1]))
                     positions.append(pos)
 
             if not positions:
