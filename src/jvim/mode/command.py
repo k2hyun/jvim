@@ -276,6 +276,70 @@ class CommandMixin:
                 return True
         return False
 
+    def _cmd_save(self, arg: str, force: bool, quit_after: bool = False) -> None:
+        """저장 명령 (:w, :wq, :x)."""
+        if self.read_only:
+            if quit_after:
+                self.post_message(self.Quit())
+            else:
+                self.status_msg = "[readonly]"
+            return
+        content = self.get_content()
+        if not force:
+            valid, err = self._check_content(content)
+            if not valid:
+                self.status_msg = err
+                return
+        save = self._pretty_to_jsonl(content) if self.jsonl else content
+        self.post_message(
+            self.FileSaveRequested(content=save, file_path=arg, quit_after=quit_after)
+        )
+
+    def _cmd_quit(self, force: bool) -> None:
+        """:q / :q!"""
+        if force:
+            self.post_message(self.ForceQuit())
+        else:
+            self.post_message(self.Quit())
+
+    def _cmd_navigate(self, verb: str, arg: str) -> None:
+        """:e / :n / :N / :prev"""
+        if verb == "e":
+            if arg == "#":
+                self.post_message(self.FileNavigateRequested(action="alternate"))
+            elif not arg:
+                self.status_msg = "Usage: :e <file>"
+            else:
+                self.post_message(self.FileOpenRequested(file_path=arg))
+        elif verb == "n":
+            self.post_message(self.FileNavigateRequested(action="next"))
+        else:
+            self.post_message(self.FileNavigateRequested(action="prev"))
+
+    def _cmd_ignore(self, verb: str, arg: str, force: bool) -> None:
+        """:ig / :uig"""
+        if verb == "ig":
+            if force:
+                self.post_message(self.UnignorePathRequested(clear_all=True))
+                self.status_msg = "All ignore patterns cleared"
+            elif arg:
+                self.post_message(self.IgnorePathRequested(path=arg))
+                self.status_msg = f"Ignoring: {arg}"
+            else:
+                paths = getattr(self, "_ignore_paths", [])
+                self.status_msg = (
+                    ("Ignored: " + ", ".join(paths)) if paths else "No ignored paths"
+                )
+        else:
+            if arg:
+                self.post_message(self.UnignorePathRequested(path=arg))
+                self.status_msg = f"Unignored: {arg}"
+            else:
+                paths = getattr(self, "_ignore_paths", [])
+                self.status_msg = (
+                    ("Ignored: " + ", ".join(paths)) if paths else "No ignored paths"
+                )
+
     def _execute_verb_command(
         self,
         verb: str,
@@ -285,48 +349,13 @@ class CommandMixin:
     ) -> None:
         """Execute parsed verb-style command (:w, :q, :e, ...)."""
         if verb == "w":
-            if self.read_only:
-                self.status_msg = "[readonly]"
-                return
-            content = self.get_content()
-            if not force:
-                valid, err = self._check_content(content)
-                if not valid:
-                    self.status_msg = err
-                    return
-            save = self._pretty_to_jsonl(content) if self.jsonl else content
-            self.post_message(self.FileSaveRequested(content=save, file_path=arg))
+            self._cmd_save(arg, force)
         elif verb == "q":
-            if force:
-                self.post_message(self.ForceQuit())
-            else:
-                self.post_message(self.Quit())
+            self._cmd_quit(force)
         elif verb in ("wq", "x"):
-            if self.read_only:
-                # read-only: just quit without saving
-                self.post_message(self.Quit())
-                return
-            content = self.get_content()
-            if not force:
-                valid, err = self._check_content(content)
-                if not valid:
-                    self.status_msg = err
-                    return
-            save = self._pretty_to_jsonl(content) if self.jsonl else content
-            self.post_message(
-                self.FileSaveRequested(content=save, file_path=arg, quit_after=True)
-            )
-        elif verb == "e":
-            if arg == "#":
-                self.post_message(self.FileNavigateRequested(action="alternate"))
-            elif not arg:
-                self.status_msg = "Usage: :e <file>"
-            else:
-                self.post_message(self.FileOpenRequested(file_path=arg))
-        elif verb == "n":
-            self.post_message(self.FileNavigateRequested(action="next"))
-        elif verb in ("N", "prev"):
-            self.post_message(self.FileNavigateRequested(action="prev"))
+            self._cmd_save(arg, force, quit_after=True)
+        elif verb in ("e", "n", "N", "prev"):
+            self._cmd_navigate(verb, arg)
         elif verb in ("fmt", "format"):
             if self.read_only:
                 self.status_msg = "[readonly]"
@@ -334,31 +363,8 @@ class CommandMixin:
                 self._format_json()
         elif verb == "help":
             self.post_message(self.HelpToggleRequested())
-        elif verb == "ig":
-            if force:
-                # :ig! → 전체 해제
-                self.post_message(self.UnignorePathRequested(clear_all=True))
-                self.status_msg = "All ignore patterns cleared"
-            elif arg:
-                self.post_message(self.IgnorePathRequested(path=arg))
-                self.status_msg = f"Ignoring: {arg}"
-            else:
-                # 현재 무시 목록 표시
-                paths = getattr(self, "_ignore_paths", [])
-                if paths:
-                    self.status_msg = "Ignored: " + ", ".join(paths)
-                else:
-                    self.status_msg = "No ignored paths"
-        elif verb == "uig":
-            if arg:
-                self.post_message(self.UnignorePathRequested(path=arg))
-                self.status_msg = f"Unignored: {arg}"
-            else:
-                paths = getattr(self, "_ignore_paths", [])
-                if paths:
-                    self.status_msg = "Ignored: " + ", ".join(paths)
-                else:
-                    self.status_msg = "No ignored paths"
+        elif verb in ("ig", "uig"):
+            self._cmd_ignore(verb, arg, force)
         else:
             self.status_msg = f"unknown command: :{raw_cmd}"
 
