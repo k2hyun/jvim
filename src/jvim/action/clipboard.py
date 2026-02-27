@@ -104,8 +104,7 @@ class ClipboardMixin:
             # fold 내부 행 제거 (cursor_row+1 ~ fold_end)
             del self.lines[self.cursor_row + 1 : next_row]
             removed = fold_end - self.cursor_row
-            del self._folds[self.cursor_row]
-            self._folded_lines_dirty = True
+            self._open_fold(self.cursor_row)
             self._adjust_line_indices(self.cursor_row + 1, -removed)
             # 이제 cursor_row+1 = 원래 next_row (fold 뒤 첫 줄)
             nxt = self.lines[self.cursor_row + 1].lstrip()

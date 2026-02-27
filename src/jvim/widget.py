@@ -240,8 +240,7 @@ class JsonEditor(
             line_len_here = len(self.lines[row])
             max_here = max(0, line_len_here - 1) if line_len_here else 0
             if self.cursor_col > max_here:
-                del self._folds[row]
-                self._folded_lines_dirty = True
+                self._open_fold(row)
         line_len = len(self.lines[self.cursor_row])
         if self._mode == EditorMode.NORMAL:
             max_col = max(0, line_len - 1) if line_len else 0
