@@ -94,6 +94,7 @@ class ContentMixin:
             self._folds.clear()
             self._folded_lines.clear()
             self._folded_lines_dirty = False
+            self._folded_lines_folds_len = 0
             self._collapsed_strings.clear()
             self.status_msg = "formatted"
         except json.JSONDecodeError as e:

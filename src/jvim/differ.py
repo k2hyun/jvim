@@ -217,6 +217,7 @@ class DiffEditor(SyncJsonEditor):
         self._folded_lines.clear()
         self._folded_lines_dirty = False
         self._folded_lines_folds_len = 0
+        self._collapsed_strings.clear()
         self._invalidate_caches()
         self.refresh()
 
