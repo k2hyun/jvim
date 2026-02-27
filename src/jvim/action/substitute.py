@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+from jvim.action.jsonpath_locator import build_key_index, find_json_value_position_fast
 from jvim.action.jsonpath import (
     get_value_at_path,
     jsonpath_find,
@@ -117,11 +118,7 @@ class SubstituteMixin:
                 delta = len(updated) - original_count
                 if delta:
                     self._adjust_line_indices(end + 1, delta)
-                self._folds.clear()
-                self._folded_lines.clear()
-                self._folded_lines_dirty = False
-                self._folded_lines_folds_len = 0
-                self._collapsed_strings.clear()
+                self._reset_fold_state()
             self.status_msg = f"{total_count} substitution(s)"
             self._invalidate_caches()
 
@@ -194,16 +191,22 @@ class SubstituteMixin:
             if not global_flag:
                 key_results = key_results[:1]
 
-            key_index = self._build_key_index()
+            key_index = build_key_index(self.lines)
             positions: list[tuple[int, int, int]] = []
             used: set[tuple[int, int]] = set()
             for json_path in key_results:
-                pos = self._find_json_value_position_fast(
-                    data, json_path, key_index, return_key=True
+                pos = find_json_value_position_fast(
+                    self.lines, data, json_path, key_index, return_key=True
                 )
                 while pos and (pos[0], pos[1]) in used:
-                    pos = self._find_json_value_position_fast(
-                        data, json_path, key_index, pos[0], pos[1] + 1, return_key=True
+                    pos = find_json_value_position_fast(
+                        self.lines,
+                        data,
+                        json_path,
+                        key_index,
+                        pos[0],
+                        pos[1] + 1,
+                        return_key=True,
                     )
                 if pos:
                     used.add((pos[0], pos[1]))
@@ -228,14 +231,16 @@ class SubstituteMixin:
             if not global_flag:
                 leaf_results = leaf_results[:1]
 
-            key_index = self._build_key_index()
+            key_index = build_key_index(self.lines)
             positions = []
             used = set()
             for json_path in leaf_results:
-                pos = self._find_json_value_position_fast(data, json_path, key_index)
+                pos = find_json_value_position_fast(
+                    self.lines, data, json_path, key_index
+                )
                 while pos and (pos[0], pos[1]) in used:
-                    pos = self._find_json_value_position_fast(
-                        data, json_path, key_index, pos[0], pos[1] + 1
+                    pos = find_json_value_position_fast(
+                        self.lines, data, json_path, key_index, pos[0], pos[1] + 1
                     )
                 if pos:
                     used.add((pos[0], pos[1]))
@@ -307,12 +312,17 @@ class SubstituteMixin:
         if not global_flag:
             all_results = all_results[:1]
 
-        key_index = self._build_key_index()
+        key_index = build_key_index(self.lines)
         positions: list[tuple[int, int, int]] = []
         for block_idx, data, json_path in all_results:
             start_line = block_start_lines.get(block_idx, 0)
-            pos = self._find_json_value_position_fast(
-                data, json_path, key_index, start_line, return_key=key_rename
+            pos = find_json_value_position_fast(
+                self.lines,
+                data,
+                json_path,
+                key_index,
+                start_line,
+                return_key=key_rename,
             )
             if pos:
                 positions.append(pos)
