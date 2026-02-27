@@ -264,6 +264,221 @@ class RenderMixin:
 
         return styles
 
+    # -- Render sub-methods ------------------------------------------------
+
+    def _flush_style_cache(self) -> None:
+        """콘텐츠 변경 시 스타일/JSONL 캐시 플러시."""
+        if not self._cache_dirty:
+            return
+        new_count = len(self.lines)
+        if new_count != self._cached_line_count:
+            # 행 수 변경 → 캐시 키(행 번호) 틀어짐, 전체 무효화
+            self._style_cache.clear()
+        else:
+            # 행 수 동일 → 변경된 행만 무효화
+            sc = self._style_cache
+            lines = self.lines
+            to_del = [
+                k for k, v in sc.items() if k < new_count and len(v) != len(lines[k])
+            ]
+            for k in to_del:
+                del sc[k]
+        self._cached_line_count = new_count
+        self._jsonl_records_cache = None
+        self._cache_dirty = False
+
+    def _render_jsonl_header(
+        self, result, result_append, jsonl_records, ln_width, rec_width, width
+    ) -> int:
+        """JSONL 플로팅 헤더 렌더링. 사용한 행 수 반환."""
+        if not (self.jsonl and jsonl_records and self._scroll_top > 0):
+            return 0
+        if jsonl_records[self._scroll_top] != 0:
+            return 0
+        # 레코드 중간에서 스크롤 → 시작 줄 탐색
+        rec_start_line = self._scroll_top - 1
+        while rec_start_line >= 0 and jsonl_records[rec_start_line] == 0:
+            rec_start_line -= 1
+        if rec_start_line < 0:
+            return 0
+        rec_num = jsonl_records[rec_start_line]
+        if self._show_line_number:
+            header = f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
+        else:
+            header = f"{rec_num:>{rec_width}} ↓"
+        result_append(result, header, style="bold cyan on grey23")
+        result_append(result, " " * (width - len(header)) + "\n")
+        return 1
+
+    def _apply_line_highlights(
+        self,
+        line_styles,
+        line_idx,
+        line_len,
+        line_bg,
+        has_visual,
+        has_search,
+        state,
+        search_by_row,
+    ) -> None:
+        """visual/search/배경 스타일 오버레이를 line_styles에 적용 (in-place)."""
+        if line_bg:
+            for c in range(len(line_styles)):
+                line_styles[c] = f"{line_bg} {line_styles[c]}"
+        # Visual 하이라이트 (search보다 아래 — search가 위에 보이도록)
+        if has_visual:
+            vsr, vsc, ver, vec = self._visual_selection_range()
+            if state.visual_mode == "V":
+                if vsr <= line_idx <= ver:
+                    for c in range(line_len):
+                        line_styles[c] = "on dark_blue"
+            else:
+                if vsr == ver == line_idx:
+                    for c in range(vsc, min(vec + 1, line_len)):
+                        line_styles[c] = "on dark_blue"
+                elif line_idx == vsr:
+                    for c in range(vsc, line_len):
+                        line_styles[c] = "on dark_blue"
+                elif line_idx == ver:
+                    for c in range(0, min(vec + 1, line_len)):
+                        line_styles[c] = "on dark_blue"
+                elif vsr < line_idx < ver:
+                    for c in range(line_len):
+                        line_styles[c] = "on dark_blue"
+        if has_search:
+            for m_start, m_end, mi in search_by_row[line_idx]:
+                is_current = mi == state.current_match
+                style = "black on yellow" if is_current else "black on dark_goldenrod"
+                for c in range(m_start, min(m_end, line_len)):
+                    line_styles[c] = style
+
+    def _render_content_line(
+        self,
+        result,
+        result_append,
+        line,
+        line_styles,
+        segs,
+        is_cursor_line,
+        cursor_col,
+        line_len,
+        is_fold_header,
+        folds,
+        line_idx,
+        line_bg,
+        avail,
+        jsonl_records,
+        prefix_w,
+        ln_width,
+        rec_width,
+        gutter_pad,
+        rows_used,
+        content_height,
+    ) -> int:
+        """단일 라인의 세그먼트를 렌더링. 갱신된 rows_used 반환."""
+        char_width = self._char_width
+        for si, (s_start, s_end) in enumerate(segs):
+            if rows_used >= content_height:
+                break
+            self._render_gutter(
+                line_idx,
+                si,
+                rows_used,
+                jsonl_records,
+                prefix_w,
+                ln_width,
+                rec_width,
+                result,
+                result_append,
+                gutter_pad,
+            )
+            # 세그먼트 렌더 — 동일 스타일 문자를 배치 출력
+            col = s_start
+            while col < s_end:
+                if is_cursor_line and col == cursor_col:
+                    result_append(
+                        result, line[col], style=f"reverse {line_styles[col]}"
+                    )
+                    col += 1
+                    continue
+                sty = line_styles[col]
+                end = col + 1
+                while (
+                    end < s_end
+                    and line_styles[end] == sty
+                    and not (is_cursor_line and end == cursor_col)
+                ):
+                    end += 1
+                result_append(result, line[col:end], style=sty)
+                col = end
+            # 라인 끝 커서 블록 (insert mode)
+            if is_cursor_line and cursor_col >= line_len and si == len(segs) - 1:
+                result_append(result, " ", style="reverse")
+            # Fold summary 표시
+            fold_summary_w = 0
+            if is_fold_header and si == 0:
+                hidden = folds[line_idx] - line_idx
+                summary = f" ... ({hidden} lines)"
+                fold_summary_w = len(summary)
+                result_append(result, summary, style="dim italic")
+            # 라인 배경이 있으면 나머지 너비를 배경색으로 채움
+            if line_bg:
+                seg_w = sum(char_width(line[c]) for c in range(s_start, s_end))
+                if is_cursor_line and cursor_col >= line_len and si == len(segs) - 1:
+                    seg_w += 1
+                pad = avail - seg_w - fold_summary_w
+                if pad > 0:
+                    result_append(result, " " * pad, style=line_bg)
+            result_append(result, "\n")
+            rows_used += 1
+        return rows_used
+
+    def _render_status_bar(
+        self, result, result_append, state, width, num_lines
+    ) -> None:
+        """모드/위치/메시지 status bar 렌더링."""
+        if state.visual_mode:
+            mode_label = " VISUAL LINE " if state.visual_mode == "V" else " VISUAL "
+            mode_style = "bold white on dark_orange"
+        else:
+            mode_label = f" {state.mode.name} "
+            mode_style = self._MODE_STYLE[state.mode]
+        result_append(result, mode_label, style=mode_style)
+
+        read_only = state.read_only
+        if read_only:
+            result_append(result, " RO ", style="bold white on grey37")
+
+        prefix_str = state.count_buf + state.pending
+        if prefix_str:
+            result_append(result, f"  {prefix_str}", style="bold yellow")
+
+        status_msg = state.status_msg
+        pos = f" Ln {state.cursor_row + 1}/{num_lines}, Col {state.cursor_col + 1} "
+        ro_len = 4 if read_only else 0
+        spacer_len = max(
+            0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4
+        )
+        result_append(result, f"  {status_msg}")
+        if spacer_len:
+            result_append(result, " " * spacer_len)
+        result_append(result, pos, style="bold")
+
+    def _render_command_line(self, result, result_append, mode) -> None:
+        """커맨드/검색 버퍼 렌더링."""
+        EditorMode = mode.__class__
+        if mode == EditorMode.COMMAND:
+            result_append(result, f"\n:{self.command_buffer}", style="bold yellow")
+            result_append(result, " ", style="reverse")
+        elif mode == EditorMode.SEARCH:
+            prefix = "/" if self._search_forward else "?"
+            result_append(
+                result, f"\n{prefix}{self._search_buffer}", style="bold magenta"
+            )
+            result_append(result, " ", style="reverse")
+        else:
+            result_append(result, "\n")
+
     # -- Main render -------------------------------------------------------
 
     def render(self) -> Text:
@@ -282,29 +497,9 @@ class RenderMixin:
                 EditorMode.SEARCH: "bold white on dark_magenta",
             }
 
-        # Flush caches when content changed
-        if self._cache_dirty:
-            new_count = len(self.lines)
-            if new_count != self._cached_line_count:
-                # 행 수 변경 → 캐시 키(행 번호) 틀어짐, 전체 무효화
-                self._style_cache.clear()
-            else:
-                # 행 수 동일 → 변경된 행만 무효화
-                sc = self._style_cache
-                lines = self.lines
-                to_del = [
-                    k
-                    for k, v in sc.items()
-                    if k < new_count and len(v) != len(lines[k])
-                ]
-                for k in to_del:
-                    del sc[k]
-            self._cached_line_count = new_count
-            self._jsonl_records_cache = None
-            self._cache_dirty = False
+        self._flush_style_cache()
 
         content_height = height - 2
-        # JSONL 캐시를 _gutter_widths() 전에 구축 (rec_count 계산에 활용)
         if self.jsonl:
             if self._jsonl_records_cache is None:
                 self._jsonl_records_cache = self._jsonl_line_records()
@@ -317,12 +512,9 @@ class RenderMixin:
         self._ensure_cursor_visible(avail)
         state = self._build_render_state()
 
-        # Local references for hot path
         lines = state.lines
         cursor_row = state.cursor_row
         cursor_col = state.cursor_col
-        make_segments = self._make_segments
-        char_width = self._char_width
         style_cache = self._style_cache
         compute_styles = self._compute_line_styles
         search_by_row = state.search_match_by_row
@@ -332,33 +524,15 @@ class RenderMixin:
         rows_used = 0
         line_idx = self._scroll_top
         num_lines = state.num_lines
-        gutter_pad = " " * prefix_w  # 래핑된 줄의 거터 공백 (미리 생성)
+        gutter_pad = " " * prefix_w
 
-        # Floating header for JSONL: show record start line when scrolled into middle of record
-        if self.jsonl and jsonl_records and self._scroll_top > 0:
-            first_visible_rec = jsonl_records[self._scroll_top]
-            if first_visible_rec == 0:
-                # We're in the middle of a record, find its start line
-                rec_start_line = self._scroll_top - 1
-                while rec_start_line >= 0 and jsonl_records[rec_start_line] == 0:
-                    rec_start_line -= 1
-                if rec_start_line >= 0:
-                    rec_num = jsonl_records[rec_start_line]
-                    # Show floating header
-                    if self._show_line_number:
-                        header = (
-                            f"{rec_start_line + 1:>{ln_width}} {rec_num:>{rec_width}} ↓"
-                        )
-                    else:
-                        header = f"{rec_num:>{rec_width}} ↓"
-                    result_append(result, header, style="bold cyan on grey23")
-                    result_append(result, " " * (width - len(header)) + "\n")
-                    rows_used += 1
+        rows_used += self._render_jsonl_header(
+            result, result_append, jsonl_records, ln_width, rec_width, width
+        )
 
         folds = state.folds
         collapsed_strs = state.collapsed_strings
         while rows_used < content_height and line_idx < num_lines:
-            # 접힌 라인 스킵
             if folds and self._is_line_folded(line_idx):
                 line_idx += 1
                 continue
@@ -367,21 +541,17 @@ class RenderMixin:
             is_cursor_line = line_idx == cursor_row
             is_fold_header = line_idx in folds
 
-            # Collapsed string: 라인을 잘라서 표시
+            # Collapsed string 처리
             str_collapse_info = None
             if line_idx in collapsed_strs:
                 info = self._find_long_string_at(line_idx)
                 if info:
                     qs, qe, slen = info
-                    # 미리보기: 처음 20자 + ...
                     preview_len = min(20, qe - qs - 2)
-                    # raw string에서 미리보기 추출 (따옴표 안쪽)
                     preview = line[qs + 1 : qs + 1 + preview_len]
                     suffix = f'..." ({slen} chars)'
-                    # 접힌 라인: key 부분 + "preview..." (N chars) + trailing
                     collapsed_line = line[:qs] + '"' + preview + suffix + line[qe:]
                     collapsed_styles = compute_styles(collapsed_line)
-                    # suffix 부분을 dim italic으로 변경
                     suffix_start = qs + 1 + preview_len
                     for ci in range(suffix_start, suffix_start + len(suffix)):
                         if ci < len(collapsed_styles):
@@ -391,7 +561,6 @@ class RenderMixin:
             if str_collapse_info:
                 line, line_styles = str_collapse_info
             else:
-                # Use cached styles or compute
                 if line_idx in style_cache:
                     line_styles = style_cache[line_idx]
                 else:
@@ -399,123 +568,57 @@ class RenderMixin:
                     style_cache[line_idx] = line_styles
 
             line_len = len(line)
-
-            # Break line into width-aware wrapped segments
-            segs = make_segments(line, avail)
-            # Cursor at end of line may need an extra wrap row
+            segs = self._make_segments(line, avail)
             if is_cursor_line and cursor_col >= line_len and line:
                 ls, le = segs[-1]
-                last_w = sum(char_width(line[c]) for c in range(ls, le))
+                last_w = sum(self._char_width(line[c]) for c in range(ls, le))
                 if last_w + 1 > avail:
                     segs.append((line_len, line_len))
 
-            # 라인 배경 (diff 하이라이팅 등 서브클래스용 훅)
             line_bg = self._line_background(line_idx)
             has_search = search_by_row and line_idx in search_by_row
             has_visual = bool(state.visual_mode) and line_len > 0
-            # 변이가 필요한 경우에만 복사
             if line_bg or has_visual or has_search:
                 line_styles = line_styles[:]
-                if line_bg:
-                    for c in range(len(line_styles)):
-                        line_styles[c] = f"{line_bg} {line_styles[c]}"
-                # Visual 하이라이트 (search보다 아래 — search가 위에 보이도록)
-                if has_visual:
-                    vsr, vsc, ver, vec = self._visual_selection_range()
-                    if state.visual_mode == "V":
-                        if vsr <= line_idx <= ver:
-                            for c in range(line_len):
-                                line_styles[c] = "on dark_blue"
-                    else:
-                        if vsr == ver == line_idx:
-                            for c in range(vsc, min(vec + 1, line_len)):
-                                line_styles[c] = "on dark_blue"
-                        elif line_idx == vsr:
-                            for c in range(vsc, line_len):
-                                line_styles[c] = "on dark_blue"
-                        elif line_idx == ver:
-                            for c in range(0, min(vec + 1, line_len)):
-                                line_styles[c] = "on dark_blue"
-                        elif vsr < line_idx < ver:
-                            for c in range(line_len):
-                                line_styles[c] = "on dark_blue"
-                if has_search:
-                    for m_start, m_end, mi in search_by_row[line_idx]:
-                        is_current = mi == state.current_match
-                        style = (
-                            "black on yellow"
-                            if is_current
-                            else "black on dark_goldenrod"
-                        )
-                        for c in range(m_start, min(m_end, line_len)):
-                            line_styles[c] = style
+                self._apply_line_highlights(
+                    line_styles,
+                    line_idx,
+                    line_len,
+                    line_bg,
+                    has_visual,
+                    has_search,
+                    state,
+                    search_by_row,
+                )
 
-            # Collapsed string은 1줄만 렌더 (wrap 방지)
             if str_collapse_info:
                 segs = segs[:1]
 
-            for si, (s_start, s_end) in enumerate(segs):
-                if rows_used >= content_height:
-                    break
-                self._render_gutter(
-                    line_idx,
-                    si,
-                    rows_used,
-                    jsonl_records,
-                    prefix_w,
-                    ln_width,
-                    rec_width,
-                    result,
-                    result_append,
-                    gutter_pad,
-                )
-                # Render segment — batch consecutive chars with same style
-                col = s_start
-                while col < s_end:
-                    if is_cursor_line and col == cursor_col:
-                        result_append(
-                            result, line[col], style=f"reverse {line_styles[col]}"
-                        )
-                        col += 1
-                        continue
-                    sty = line_styles[col]
-                    end = col + 1
-                    while (
-                        end < s_end
-                        and line_styles[end] == sty
-                        and not (is_cursor_line and end == cursor_col)
-                    ):
-                        end += 1
-                    result_append(result, line[col:end], style=sty)
-                    col = end
-                # Cursor block at end of line (insert mode)
-                if is_cursor_line and cursor_col >= line_len and si == len(segs) - 1:
-                    result_append(result, " ", style="reverse")
-                # Fold summary 표시
-                fold_summary_w = 0
-                if is_fold_header and si == 0:
-                    hidden = folds[line_idx] - line_idx
-                    summary = f" ... ({hidden} lines)"
-                    fold_summary_w = len(summary)
-                    result_append(result, summary, style="dim italic")
-                # 라인 배경이 있으면 나머지 너비를 배경색으로 채움
-                if line_bg:
-                    seg_w = sum(char_width(line[c]) for c in range(s_start, s_end))
-                    if (
-                        is_cursor_line
-                        and cursor_col >= line_len
-                        and si == len(segs) - 1
-                    ):
-                        seg_w += 1
-                    pad = avail - seg_w - fold_summary_w
-                    if pad > 0:
-                        result_append(result, " " * pad, style=line_bg)
-                result_append(result, "\n")
-                rows_used += 1
-
+            rows_used = self._render_content_line(
+                result,
+                result_append,
+                line,
+                line_styles,
+                segs,
+                is_cursor_line,
+                cursor_col,
+                line_len,
+                is_fold_header,
+                folds,
+                line_idx,
+                line_bg,
+                avail,
+                jsonl_records,
+                prefix_w,
+                ln_width,
+                rec_width,
+                gutter_pad,
+                rows_used,
+                content_height,
+            )
             line_idx += 1
 
-        # Fill remaining rows with ~
+        # 남은 행을 ~로 채움
         if rows_used < content_height:
             tilde_line = f"{'~':>{prefix_w - 1}} \n"
             while rows_used < content_height:
@@ -528,46 +631,9 @@ class RenderMixin:
         if state.tab_completions and mode == EditorMode.COMMAND:
             self._render_wildmenu(result, result_append, width)
         else:
-            if state.visual_mode:
-                mode_label = " VISUAL LINE " if state.visual_mode == "V" else " VISUAL "
-                mode_style = "bold white on dark_orange"
-            else:
-                mode_label = f" {mode.name} "
-                mode_style = self._MODE_STYLE[mode]
-            result_append(result, mode_label, style=mode_style)
+            self._render_status_bar(result, result_append, state, width, num_lines)
 
-            read_only = state.read_only
-            if read_only:
-                result_append(result, " RO ", style="bold white on grey37")
-
-            count_buf = state.count_buf
-            pending = state.pending
-            prefix_str = count_buf + pending
-            if prefix_str:
-                result_append(result, f"  {prefix_str}", style="bold yellow")
-
-            status_msg = state.status_msg
-            pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
-            ro_len = 4 if read_only else 0
-            spacer_len = max(
-                0, width - len(mode_label) - ro_len - len(pos) - len(status_msg) - 4
-            )
-            result_append(result, f"  {status_msg}")
-            if spacer_len:
-                result_append(result, " " * spacer_len)
-            result_append(result, pos, style="bold")
-
-        if mode == EditorMode.COMMAND:
-            result_append(result, f"\n:{self.command_buffer}", style="bold yellow")
-            result_append(result, " ", style="reverse")
-        elif mode == EditorMode.SEARCH:
-            prefix = "/" if self._search_forward else "?"
-            result_append(
-                result, f"\n{prefix}{self._search_buffer}", style="bold magenta"
-            )
-            result_append(result, " ", style="reverse")
-        else:
-            result_append(result, "\n")
+        self._render_command_line(result, result_append, mode)
 
         return result
 
