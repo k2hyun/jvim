@@ -6,6 +6,23 @@ from __future__ import annotations
 class FoldMixin:
     """Fold and collapse related methods for JsonEditor."""
 
+    def _get_fold_end(self, line_idx: int) -> int | None:
+        """Return fold end line if *line_idx* is a fold header."""
+        return self._folds.get(line_idx)
+
+    def _has_fold_header(self, line_idx: int) -> bool:
+        """Return True when *line_idx* is a fold header."""
+        return line_idx in self._folds
+
+    def _reset_fold_state(self, clear_collapsed: bool = True) -> None:
+        """Clear fold bookkeeping after structural content changes."""
+        self._folds.clear()
+        self._folded_lines.clear()
+        self._folded_lines_dirty = False
+        self._folded_lines_folds_len = 0
+        if clear_collapsed:
+            self._collapsed_strings.clear()
+
     def _adjust_line_indices(self, from_line: int, delta: int) -> None:
         """라인 삽입(delta>0)/삭제(delta<0) 후 fold/collapse 인덱스 조정."""
         if delta == 0:

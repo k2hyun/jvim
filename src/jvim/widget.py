@@ -236,7 +236,7 @@ class JsonEditor(
                 if self.cursor_col > visible_end:
                     self._collapsed_strings.discard(row)
         # fold 헤더에서 커서가 라인 끝을 넘으려 하면 자동 펼기
-        if row in self._folds:
+        if self._has_fold_header(row):
             line_len_here = len(self.lines[row])
             max_here = max(0, line_len_here - 1) if line_len_here else 0
             if self.cursor_col > max_here:

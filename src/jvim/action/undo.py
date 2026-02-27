@@ -24,11 +24,7 @@ class UndoMixin:
         self.cursor_row = row
         self.cursor_col = col
         self._visual_mode = ""
-        self._folds.clear()
-        self._folded_lines.clear()
-        self._folded_lines_dirty = False
-        self._folded_lines_folds_len = 0
-        self._collapsed_strings.clear()
+        self._reset_fold_state()
         self._invalidate_caches()
         self.status_msg = "undone"
 
@@ -43,11 +39,7 @@ class UndoMixin:
         self.cursor_row = row
         self.cursor_col = col
         self._visual_mode = ""
-        self._folds.clear()
-        self._folded_lines.clear()
-        self._folded_lines_dirty = False
-        self._folded_lines_folds_len = 0
-        self._collapsed_strings.clear()
+        self._reset_fold_state()
         self._invalidate_caches()
         self.status_msg = "redone"
 

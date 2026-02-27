@@ -225,56 +225,65 @@ class CommandMixin:
         self._tab_verb = verb
         self._tab_index = -1
 
-    def _exec_command(self, cmd: str) -> None:
+    @staticmethod
+    def _parse_ex_command(cmd: str) -> tuple[str, dict]:
+        """Parse ex command string to a command kind + payload."""
         stripped = cmd.strip()
 
-        # :$ → jump to last line
         if stripped == "$":
-            self.cursor_row = len(self.lines) - 1
-            self.cursor_col = 0
-            self._scroll_cursor_to_top()
-            return
+            return ("jump_last", {})
 
-        # Line jump: :l<num> → editor line; :<num> or :p<num> → file line (JSONL record)
         if len(stripped) > 1 and stripped[0] == "l" and stripped[1:].isdigit():
-            num = int(stripped[1:])
-            self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
-            self.cursor_col = 0
-            self._scroll_cursor_to_top()
-            return
+            return ("jump_line", {"num": int(stripped[1:])})
+
         if stripped.isdigit() or (
             len(stripped) > 1 and stripped[0] == "p" and stripped[1:].isdigit()
         ):
             num = int(stripped if stripped.isdigit() else stripped[1:])
-            if self.jsonl:
-                records = self._jsonl_line_records()
-                for i, rec in enumerate(records):
-                    if rec == num:
-                        self.cursor_row = i
-                        self.cursor_col = 0
-                        self._scroll_cursor_to_top()
-                        return
-                self.status_msg = f"record {num} not found"
-                return
-            self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
-            self.cursor_col = 0
-            self._scroll_cursor_to_top()
-            return
+            return ("jump_file_line", {"num": num})
 
-        # 치환 명령: :s/old/new/g, :%s/old/new/g, :N,Ms/old/new/g
-        sub_match = re.match(r"^(%|(\d+),(\d+))?s(.)(.*)$", stripped)
-        if sub_match:
-            self._execute_substitute(stripped)
-            return
+        if re.match(r"^(%|(\d+),(\d+))?s(.)(.*)$", stripped):
+            return ("substitute", {"sub_cmd": stripped})
 
-        parts = cmd.split(None, 1)
+        parts = stripped.split(None, 1)
         verb = parts[0] if parts else ""
         arg = parts[1] if len(parts) > 1 else ""
-
         force = verb.endswith("!")
         if force:
             verb = verb[:-1]
+        return (
+            "verb",
+            {
+                "verb": verb,
+                "arg": arg,
+                "force": force,
+                "raw_cmd": cmd,
+            },
+        )
 
+    def _jump_to_editor_line(self, num: int) -> None:
+        self.cursor_row = max(0, min(num - 1, len(self.lines) - 1))
+        self.cursor_col = 0
+        self._scroll_cursor_to_top()
+
+    def _jump_to_jsonl_record(self, num: int) -> bool:
+        records = self._jsonl_line_records()
+        for i, rec in enumerate(records):
+            if rec == num:
+                self.cursor_row = i
+                self.cursor_col = 0
+                self._scroll_cursor_to_top()
+                return True
+        return False
+
+    def _execute_verb_command(
+        self,
+        verb: str,
+        arg: str,
+        force: bool,
+        raw_cmd: str,
+    ) -> None:
+        """Execute parsed verb-style command (:w, :q, :e, ...)."""
         if verb == "w":
             if self.read_only:
                 self.status_msg = "[readonly]"
@@ -351,4 +360,32 @@ class CommandMixin:
                 else:
                     self.status_msg = "No ignored paths"
         else:
-            self.status_msg = f"unknown command: :{cmd}"
+            self.status_msg = f"unknown command: :{raw_cmd}"
+
+    def _exec_command(self, cmd: str) -> None:
+        kind, payload = self._parse_ex_command(cmd)
+
+        if kind == "jump_last":
+            self._jump_to_editor_line(len(self.lines))
+            return
+        if kind == "jump_line":
+            self._jump_to_editor_line(payload["num"])
+            return
+        if kind == "jump_file_line":
+            num = payload["num"]
+            if self.jsonl:
+                if not self._jump_to_jsonl_record(num):
+                    self.status_msg = f"record {num} not found"
+                return
+            self._jump_to_editor_line(num)
+            return
+        if kind == "substitute":
+            self._execute_substitute(payload["sub_cmd"])
+            return
+
+        self._execute_verb_command(
+            payload["verb"],
+            payload["arg"],
+            payload["force"],
+            payload["raw_cmd"],
+        )

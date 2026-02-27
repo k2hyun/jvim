@@ -837,6 +837,37 @@ class TestLineJump:
         assert editor._scroll_top == 41
 
 
+class TestCommandParsing:
+    """Tests for command parsing split from _exec_command."""
+
+    def test_parse_jump_last(self):
+        kind, payload = JsonEditor._parse_ex_command("$")
+        assert kind == "jump_last"
+        assert payload == {}
+
+    def test_parse_line_jump(self):
+        kind, payload = JsonEditor._parse_ex_command("l42")
+        assert kind == "jump_line"
+        assert payload["num"] == 42
+
+    def test_parse_file_line_jump(self):
+        kind, payload = JsonEditor._parse_ex_command("p12")
+        assert kind == "jump_file_line"
+        assert payload["num"] == 12
+
+    def test_parse_substitute(self):
+        kind, payload = JsonEditor._parse_ex_command("%s/foo/bar/g")
+        assert kind == "substitute"
+        assert payload["sub_cmd"] == "%s/foo/bar/g"
+
+    def test_parse_verb_with_force(self):
+        kind, payload = JsonEditor._parse_ex_command("w! out.json")
+        assert kind == "verb"
+        assert payload["verb"] == "w"
+        assert payload["force"] is True
+        assert payload["arg"] == "out.json"
+
+
 class TestFolding:
     """JSON folding 테스트."""
 

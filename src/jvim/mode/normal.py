@@ -22,54 +22,8 @@ class NormalMixin:
             return max(1, n)
         return 1
 
-    def _handle_normal(self, event) -> None:
-        EditorMode = self._mode.__class__
-        key = event.key
-        char = event.character or ""
-
-        # Escape: visual mode 해제 (pending보다 우선) + count 리셋
-        if key == "escape":
-            self._count_buf = ""
-            if self._visual_mode:
-                self._visual_mode = ""
-                self.status_msg = ""
-            return
-
-        if self.pending:
-            self._handle_pending(char, key)
-            return
-
-        # 숫자 접두사 수집: 1-9로 시작, 이후 0-9 누적
-        if char and char.isdigit():
-            if char != "0" or self._count_buf:
-                self._count_buf += char
-                return
-
-        # Visual mode 진입/전환/해제
-        if char == "v":
-            self._count_buf = ""
-            if self._visual_mode == "v":
-                self._visual_mode = ""
-                self.status_msg = ""
-            else:
-                self._visual_mode = "v"
-                self._visual_anchor_row = self.cursor_row
-                self._visual_anchor_col = self.cursor_col
-                self.status_msg = "-- VISUAL --"
-            return
-        if char == "V":
-            self._count_buf = ""
-            if self._visual_mode == "V":
-                self._visual_mode = ""
-                self.status_msg = ""
-            else:
-                self._visual_mode = "V"
-                self._visual_anchor_row = self.cursor_row
-                self._visual_anchor_col = self.cursor_col
-                self.status_msg = "-- VISUAL LINE --"
-            return
-
-        # movement (count 적용)
+    def _handle_normal_movement(self, key: str, char: str) -> bool:
+        """Handle normal-mode movement/navigation keys."""
         if char == "h" or key == "left":
             count = self._consume_count()
             self.cursor_col -= count
@@ -177,9 +131,13 @@ class NormalMixin:
             self.status_msg = (
                 f'"{self._mode.name}" line {self.cursor_row + 1} of {total} --{pct}%--'
             )
+        else:
+            return False
+        return True
 
-        # enter insert mode
-        elif char == "i":
+    def _handle_normal_insert_entry(self, event, char: str) -> bool:
+        """Handle insert-entry keys: i/I/a/A/o/O."""
+        if char == "i":
             self._count_buf = ""
             if not self.read_only:
                 self._dot_start(event)
@@ -211,7 +169,7 @@ class NormalMixin:
                 self._dot_start(event)
                 self._save_undo()
                 # fold-aware: fold 헤더이면 fold end 뒤에 삽입
-                fold_end = self._folds.get(self.cursor_row)
+                fold_end = self._get_fold_end(self.cursor_row)
                 if fold_end is not None:
                     insert_row = fold_end + 1
                     # fold end 행의 들여쓰기 기준
@@ -244,9 +202,13 @@ class NormalMixin:
                 self._adjust_line_indices(self.cursor_row, 1)
                 self.cursor_col = indent
                 self._enter_insert()
+        else:
+            return False
+        return True
 
-        # single-key edits (count 적용)
-        elif char == "x":
+    def _handle_normal_single_edit(self, event, key: str, char: str) -> bool:
+        """Handle one-key edit commands."""
+        if char == "x":
             if self.read_only:
                 self._count_buf = ""
                 self.status_msg = "[readonly]"
@@ -301,30 +263,17 @@ class NormalMixin:
                 self._dot_stop()
                 for _ in range(count):
                     self._join_lines()
-
-        # dot repeat
         elif char == ".":
             self._count_buf = ""
             if not self.read_only:
                 self._dot_replay()
+        else:
+            return False
+        return True
 
-        # multi-key starters (count는 pending에서 계속 누적 가능)
-        elif char in ("d", "c", "y", "r", "g", "e", "z"):
-            # Visual mode 연산자 인터셉트
-            if self._visual_mode and char in ("d", "y", "c"):
-                self._count_buf = ""
-                self._execute_visual_operator(char)
-                return
-            if self.read_only and char not in ("y", "g", "e", "z"):
-                self._count_buf = ""
-                self.status_msg = "[readonly]"
-            else:
-                if char not in ("y", "g", "e", "z"):
-                    self._dot_start(event)
-                self.pending = char
-
-        # search mode
-        elif char == "/":
+    def _handle_normal_mode_switch(self, EditorMode, char: str) -> bool:
+        """Handle / ? n N : mode-related commands."""
+        if char == "/":
             self._count_buf = ""
             self._visual_mode = ""
             self._mode = EditorMode.SEARCH
@@ -344,14 +293,89 @@ class NormalMixin:
         elif char == "N":
             self._count_buf = ""
             self._goto_prev_match()
-
-        # command mode
         elif char == ":":
             self._count_buf = ""
             self._visual_mode = ""
             self._mode = EditorMode.COMMAND
             self.command_buffer = ""
             self.status_msg = ""
+        else:
+            return False
+        return True
+
+    def _handle_normal(self, event) -> None:
+        EditorMode = self._mode.__class__
+        key = event.key
+        char = event.character or ""
+
+        # Escape: visual mode 해제 (pending보다 우선) + count 리셋
+        if key == "escape":
+            self._count_buf = ""
+            if self._visual_mode:
+                self._visual_mode = ""
+                self.status_msg = ""
+            return
+
+        if self.pending:
+            self._handle_pending(char, key)
+            return
+
+        # 숫자 접두사 수집: 1-9로 시작, 이후 0-9 누적
+        if char and char.isdigit():
+            if char != "0" or self._count_buf:
+                self._count_buf += char
+                return
+
+        # Visual mode 진입/전환/해제
+        if char == "v":
+            self._count_buf = ""
+            if self._visual_mode == "v":
+                self._visual_mode = ""
+                self.status_msg = ""
+            else:
+                self._visual_mode = "v"
+                self._visual_anchor_row = self.cursor_row
+                self._visual_anchor_col = self.cursor_col
+                self.status_msg = "-- VISUAL --"
+            return
+        if char == "V":
+            self._count_buf = ""
+            if self._visual_mode == "V":
+                self._visual_mode = ""
+                self.status_msg = ""
+            else:
+                self._visual_mode = "V"
+                self._visual_anchor_row = self.cursor_row
+                self._visual_anchor_col = self.cursor_col
+                self.status_msg = "-- VISUAL LINE --"
+            return
+
+        if self._handle_normal_movement(key, char):
+            return
+
+        if self._handle_normal_insert_entry(event, char):
+            return
+
+        if self._handle_normal_single_edit(event, key, char):
+            return
+
+        # multi-key starters (count는 pending에서 계속 누적 가능)
+        if char in ("d", "c", "y", "r", "g", "e", "z"):
+            # Visual mode 연산자 인터셉트
+            if self._visual_mode and char in ("d", "y", "c"):
+                self._count_buf = ""
+                self._execute_visual_operator(char)
+                return
+            if self.read_only and char not in ("y", "g", "e", "z"):
+                self._count_buf = ""
+                self.status_msg = "[readonly]"
+            else:
+                if char not in ("y", "g", "e", "z"):
+                    self._dot_start(event)
+                self.pending = char
+            return
+
+        self._handle_normal_mode_switch(EditorMode, char)
 
     # -- Pending multi-char ------------------------------------------------
 
@@ -389,7 +413,7 @@ class NormalMixin:
                 if self.cursor_row >= len(self.lines):
                     break
                 # fold-aware: fold 헤더이면 전체 블록 삭제
-                fold_end = self._folds.get(self.cursor_row)
+                fold_end = self._get_fold_end(self.cursor_row)
                 if fold_end is not None:
                     block = self.lines[self.cursor_row : fold_end + 1]
                     yanked.extend(block)
@@ -467,7 +491,7 @@ class NormalMixin:
                 if row >= len(self.lines):
                     break
                 # fold-aware: fold 헤더이면 전체 블록 yank
-                fold_end = self._folds.get(row)
+                fold_end = self._get_fold_end(row)
                 if fold_end is not None:
                     yanked.extend(self.lines[row : fold_end + 1])
                     row = fold_end + 1

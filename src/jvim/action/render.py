@@ -4,8 +4,30 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from rich.text import Text
+
+
+@dataclass
+class RenderState:
+    """Snapshot of editor state consumed by the render pipeline."""
+
+    lines: list[str]
+    cursor_row: int
+    cursor_col: int
+    mode: object
+    read_only: bool
+    visual_mode: str
+    count_buf: str
+    pending: str
+    status_msg: str
+    current_match: int
+    search_match_by_row: dict[int, list[tuple[int, int, int]]]
+    folds: dict[int, int]
+    collapsed_strings: set[int]
+    tab_completions: list[str]
+    num_lines: int
 
 
 class RenderMixin:
@@ -173,6 +195,26 @@ class RenderMixin:
         """서브클래스에서 라인별 배경 스타일을 지정하기 위한 훅."""
         return ""
 
+    def _build_render_state(self) -> RenderState:
+        """Capture mutable editor fields used during render as a snapshot."""
+        return RenderState(
+            lines=self.lines,
+            cursor_row=self.cursor_row,
+            cursor_col=self.cursor_col,
+            mode=self._mode,
+            read_only=self.read_only,
+            visual_mode=self._visual_mode,
+            count_buf=self._count_buf,
+            pending=self.pending,
+            status_msg=self.status_msg,
+            current_match=self._current_match,
+            search_match_by_row=self._search_match_by_row,
+            folds=self._folds,
+            collapsed_strings=self._collapsed_strings,
+            tab_completions=self._tab_completions,
+            num_lines=len(self.lines),
+        )
+
     # -- Syntax highlighting -----------------------------------------------
 
     def _compute_line_styles(self, line: str) -> list[str]:
@@ -273,22 +315,23 @@ class RenderMixin:
         avail = max(1, width - prefix_w)
 
         self._ensure_cursor_visible(avail)
+        state = self._build_render_state()
 
         # Local references for hot path
-        lines = self.lines
-        cursor_row = self.cursor_row
-        cursor_col = self.cursor_col
+        lines = state.lines
+        cursor_row = state.cursor_row
+        cursor_col = state.cursor_col
         make_segments = self._make_segments
         char_width = self._char_width
         style_cache = self._style_cache
         compute_styles = self._compute_line_styles
-        search_by_row = self._search_match_by_row
+        search_by_row = state.search_match_by_row
         result_append = Text.append
 
         result = Text()
         rows_used = 0
         line_idx = self._scroll_top
-        num_lines = len(lines)
+        num_lines = state.num_lines
         gutter_pad = " " * prefix_w  # 래핑된 줄의 거터 공백 (미리 생성)
 
         # Floating header for JSONL: show record start line when scrolled into middle of record
@@ -312,8 +355,8 @@ class RenderMixin:
                     result_append(result, " " * (width - len(header)) + "\n")
                     rows_used += 1
 
-        folds = self._folds
-        collapsed_strs = self._collapsed_strings
+        folds = state.folds
+        collapsed_strs = state.collapsed_strings
         while rows_used < content_height and line_idx < num_lines:
             # 접힌 라인 스킵
             if folds and self._is_line_folded(line_idx):
@@ -369,7 +412,7 @@ class RenderMixin:
             # 라인 배경 (diff 하이라이팅 등 서브클래스용 훅)
             line_bg = self._line_background(line_idx)
             has_search = search_by_row and line_idx in search_by_row
-            has_visual = bool(self._visual_mode) and line_len > 0
+            has_visual = bool(state.visual_mode) and line_len > 0
             # 변이가 필요한 경우에만 복사
             if line_bg or has_visual or has_search:
                 line_styles = line_styles[:]
@@ -379,7 +422,7 @@ class RenderMixin:
                 # Visual 하이라이트 (search보다 아래 — search가 위에 보이도록)
                 if has_visual:
                     vsr, vsc, ver, vec = self._visual_selection_range()
-                    if self._visual_mode == "V":
+                    if state.visual_mode == "V":
                         if vsr <= line_idx <= ver:
                             for c in range(line_len):
                                 line_styles[c] = "on dark_blue"
@@ -398,7 +441,7 @@ class RenderMixin:
                                 line_styles[c] = "on dark_blue"
                 if has_search:
                     for m_start, m_end, mi in search_by_row[line_idx]:
-                        is_current = mi == self._current_match
+                        is_current = mi == state.current_match
                         style = (
                             "black on yellow"
                             if is_current
@@ -480,30 +523,30 @@ class RenderMixin:
                 rows_used += 1
 
         # status bar (wildmenu: 후보 목록이 있으면 status bar를 대체)
-        mode = self._mode
+        mode = state.mode
         EditorMode = mode.__class__
-        if self._tab_completions and mode == EditorMode.COMMAND:
+        if state.tab_completions and mode == EditorMode.COMMAND:
             self._render_wildmenu(result, result_append, width)
         else:
-            if self._visual_mode:
-                mode_label = " VISUAL LINE " if self._visual_mode == "V" else " VISUAL "
+            if state.visual_mode:
+                mode_label = " VISUAL LINE " if state.visual_mode == "V" else " VISUAL "
                 mode_style = "bold white on dark_orange"
             else:
                 mode_label = f" {mode.name} "
                 mode_style = self._MODE_STYLE[mode]
             result_append(result, mode_label, style=mode_style)
 
-            read_only = self.read_only
+            read_only = state.read_only
             if read_only:
                 result_append(result, " RO ", style="bold white on grey37")
 
-            count_buf = self._count_buf
-            pending = self.pending
+            count_buf = state.count_buf
+            pending = state.pending
             prefix_str = count_buf + pending
             if prefix_str:
                 result_append(result, f"  {prefix_str}", style="bold yellow")
 
-            status_msg = self.status_msg
+            status_msg = state.status_msg
             pos = f" Ln {cursor_row + 1}/{num_lines}, Col {cursor_col + 1} "
             ro_len = 4 if read_only else 0
             spacer_len = max(

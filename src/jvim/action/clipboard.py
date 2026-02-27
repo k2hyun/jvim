@@ -47,7 +47,7 @@ class ClipboardMixin:
             return
         # fold-aware: fold 헤더이면 fold end 뒤에 삽입
         insert_after = self.cursor_row
-        fold_end = self._folds.get(self.cursor_row)
+        fold_end = self._get_fold_end(self.cursor_row)
         if fold_end is not None:
             insert_after = fold_end
         inserted = len(self.yank_buffer)
@@ -94,7 +94,7 @@ class ClipboardMixin:
         if self.cursor_row >= len(self.lines) - 1:
             return
         # fold-aware: fold 헤더이면 fold 전체를 제거한 뒤 다음 보이는 줄과 join
-        fold_end = self._folds.get(self.cursor_row)
+        fold_end = self._get_fold_end(self.cursor_row)
         if fold_end is not None:
             next_row = fold_end + 1
             if next_row >= len(self.lines):

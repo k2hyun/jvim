@@ -23,11 +23,7 @@ class ContentMixin:
         self.lines = content.split("\n") if content else [""]
         self.cursor_row = 0
         self.cursor_col = 0
-        self._folds.clear()
-        self._folded_lines.clear()
-        self._folded_lines_dirty = False
-        self._folded_lines_folds_len = 0
-        self._collapsed_strings.clear()
+        self._reset_fold_state()
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):
@@ -91,11 +87,7 @@ class ContentMixin:
             self.lines = formatted.split("\n")
             self.cursor_row = 0
             self.cursor_col = 0
-            self._folds.clear()
-            self._folded_lines.clear()
-            self._folded_lines_dirty = False
-            self._folded_lines_folds_len = 0
-            self._collapsed_strings.clear()
+            self._reset_fold_state()
             self.status_msg = "formatted"
         except json.JSONDecodeError as e:
             self.status_msg = f"cannot format: {e.msg} (line {e.lineno})"
@@ -113,11 +105,7 @@ class ContentMixin:
                 return
         self._save_undo()
         self.lines = "\n\n".join(formatted).split("\n")
-        self._folds.clear()
-        self._folded_lines.clear()
-        self._folded_lines_dirty = False
-        self._folded_lines_folds_len = 0
-        self._collapsed_strings.clear()
+        self._reset_fold_state()
         self.cursor_row = 0
         self.cursor_col = 0
         self.status_msg = "formatted"
