@@ -620,7 +620,8 @@ class RenderMixin:
 
         # 남은 행을 ~로 채움
         if rows_used < content_height:
-            tilde_line = f"{'~':>{prefix_w - 1}} \n"
+            tw = max(0, prefix_w - 1)
+            tilde_line = f"{'~':>{tw}} \n" if tw else "~\n"
             while rows_used < content_height:
                 result_append(result, tilde_line, style="dim blue")
                 rows_used += 1

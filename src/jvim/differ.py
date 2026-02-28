@@ -15,6 +15,7 @@ from textual.widgets import Button, Header, Static
 
 from rich.text import Text
 
+from .action.folding import FoldMixin
 from .action.jsonpath import jsonpath_find
 from .diff import DiffHunk, DiffTag, compute_json_diff
 from .editor import _detect_jsonl
@@ -129,6 +130,10 @@ class SyncJsonEditor(JsonEditor):
         if not self.has_focus and self._sync_target is not None:
             self._scroll_top = self._sync_target._scroll_top
             self.cursor_row = self._sync_target.cursor_row
+            self.cursor_col = min(
+                self._sync_target.cursor_col,
+                max(0, len(self.lines[self.cursor_row]) - 1) if self.lines else 0,
+            )
         result = super().render()
         if self.has_focus and self._sync_target is not None:
             changed = False
@@ -137,6 +142,16 @@ class SyncJsonEditor(JsonEditor):
                 changed = True
             if self._sync_target.cursor_row != self.cursor_row:
                 self._sync_target.cursor_row = self.cursor_row
+                changed = True
+            if self._sync_target.cursor_col != self.cursor_col:
+                line_len = (
+                    len(self._sync_target.lines[self._sync_target.cursor_row])
+                    if self._sync_target.lines
+                    else 0
+                )
+                self._sync_target.cursor_col = min(
+                    self.cursor_col, max(0, line_len - 1)
+                )
                 changed = True
             if changed:
                 self._sync_target.refresh()
@@ -582,9 +597,7 @@ class JsonDiffApp(App):
                     to_remove.append(start)
                     break
         for s in to_remove:
-            del editor._folds[s]
-        if to_remove:
-            editor._folded_lines_dirty = True
+            FoldMixin._open_fold(editor, s)
         # diff가 있는 collapsed string도 펼기
         to_expand = [
             i
@@ -683,9 +696,7 @@ class JsonDiffApp(App):
         # 모든 depth fold 후 diff 있는 부분만 unfold
         left_editor._fold_all_nested()
         self._unfold_diff_regions(left_editor)
-        right_editor._folds = dict(left_editor._folds)
-        right_editor._folded_lines_dirty = True
-        right_editor._collapsed_strings = set(left_editor._collapsed_strings)
+        left_editor._sync_folds_to_target()
 
         left_editor._update_hunk_status()
         right_editor._update_hunk_status()
@@ -856,9 +867,11 @@ class JsonDiffApp(App):
             return None
 
         saved_row = editor.cursor_row
-        editor.cursor_row = source_row
-        result = editor._find_string_at_cursor()
-        editor.cursor_row = saved_row
+        try:
+            editor.cursor_row = source_row
+            result = editor._find_string_at_cursor()
+        finally:
+            editor.cursor_row = saved_row
 
         if result is None:
             return None
