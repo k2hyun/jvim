@@ -312,6 +312,16 @@ Also available as `jvd` shortcut.
 
 Use `:help` inside jvim to see the full keybinding reference.
 
+## Vim Plugin
+
+A native Vim plugin with the same JSON editing features (folding, JSONPath, embedded JSON, JSONL) is available as a standalone repository:
+
+[vim-jvim](https://github.com/k2hyun/vim-jvim) — install with your favorite plugin manager:
+
+```vim
+Plug 'k2hyun/vim-jvim'
+```
+
 ## License
 
 MIT

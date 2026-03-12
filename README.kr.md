@@ -310,6 +310,16 @@ jvimdiff --jsonl file1.json file2.json
 
 jvim 내에서 `:help`를 입력하면 전체 키 바인딩을 확인할 수 있습니다.
 
+## Vim 플러그인
+
+동일한 JSON 편집 기능(폴딩, JSONPath, 내장 JSON, JSONL)을 제공하는 네이티브 Vim 플러그인이 별도 리포지토리로 제공됩니다:
+
+[vim-jvim](https://github.com/k2hyun/vim-jvim) — 원하는 플러그인 매니저로 설치:
+
+```vim
+Plug 'k2hyun/vim-jvim'
+```
+
 ## 라이선스
 
 MIT
