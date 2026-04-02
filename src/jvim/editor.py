@@ -76,6 +76,7 @@ class JsonEditorApp(App):
     TITLE = "JSON Editor"
     BINDINGS = []
     ENABLE_COMMAND_PALETTE = False
+    ENABLE_MOUSE_SUPPORT = False
 
     def __init__(
         self,
