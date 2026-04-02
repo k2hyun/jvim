@@ -512,7 +512,6 @@ class JsonDiffApp(App):
     TITLE = "JSON Diff"
     BINDINGS = []
     ENABLE_COMMAND_PALETTE = False
-    ENABLE_MOUSE_SUPPORT = False
 
     def __init__(
         self,
@@ -1099,7 +1098,7 @@ def main() -> None:
             jsonl=jsonl,
             file_pairs=file_pairs,
         )
-        app.run()
+        app.run(mouse=False)
         return
 
     if Path(args.file1).is_dir() or Path(args.file2).is_dir():
@@ -1134,7 +1133,7 @@ def main() -> None:
         normalize=not args.no_normalize,
         jsonl=jsonl,
     )
-    app.run()
+    app.run(mouse=False)
 
 
 if __name__ == "__main__":

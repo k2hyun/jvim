@@ -76,7 +76,6 @@ class JsonEditorApp(App):
     TITLE = "JSON Editor"
     BINDINGS = []
     ENABLE_COMMAND_PALETTE = False
-    ENABLE_MOUSE_SUPPORT = False
 
     def __init__(
         self,
@@ -487,7 +486,7 @@ def main() -> None:
         jsonl=jsonl,
         file_list=file_list,
     )
-    app.run()
+    app.run(mouse=False)
 
 
 if __name__ == "__main__":
