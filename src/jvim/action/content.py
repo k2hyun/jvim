@@ -177,6 +177,32 @@ class ContentMixin:
                 source_row=self.cursor_row,
                 source_col_start=col_start,
                 source_col_end=col_end,
+                edit_kind="json",
+            )
+        )
+
+    def _edit_embedded_string(self, min_newlines: int = 1) -> None:
+        """Handle es command to edit a multiline string value."""
+        result = self._find_string_at_cursor()
+        if result is None:
+            self.status_msg = "cursor not on a string value"
+            return
+
+        col_start, col_end, content = result
+        newline_count = content.count("\n")
+        if newline_count < min_newlines:
+            plural = "" if min_newlines == 1 else "s"
+            self.status_msg = f"string has fewer than {min_newlines} newline{plural}"
+            return
+
+        self.post_message(
+            self.EmbeddedEditRequested(
+                content=content,
+                source_row=self.cursor_row,
+                source_col_start=col_start,
+                source_col_end=col_end,
+                edit_kind="string",
+                min_newlines=min_newlines,
             )
         )
 

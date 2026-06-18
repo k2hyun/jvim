@@ -51,7 +51,7 @@ class JsonEditor(
 
     Supported commands:
       NORMAL: h j k l  w b  0 $ ^  gg G  %  i I a A o O
-              x  dd dw d$  cw cc  r{c}  J  yy p P  u
+              x  dd dw d$  cw cc  r{c}  J  yy p P  u  ej es
       INSERT: typing / Backspace / Enter / Tab / Escape
       COMMAND: :w :q :wq :fmt
     """
@@ -102,10 +102,12 @@ class JsonEditor(
 
     @dataclass
     class EmbeddedEditRequested(Message):
-        content: str  # Parsed JSON content to edit
+        content: str  # Content to edit in the embedded panel
         source_row: int  # Row of the string value
         source_col_start: int  # Column where string starts (including quote)
         source_col_end: int  # Column where string ends (including quote)
+        edit_kind: str = "json"  # "json" or "string"
+        min_newlines: int = 0  # only meaningful for string edits
 
     @dataclass
     class EmbeddedEditSave(Message):
@@ -199,6 +201,7 @@ class JsonEditor(
         self._last_ecv_state: tuple | None = None
         # 거터 설정
         self._show_line_number: bool = True  # False면 LN 컬럼 숨김
+        self._skip_json_validation: bool = False
         # 초기 로드 시 긴 문자열 자동 접기
         for i in range(len(self.lines)):
             if self._find_long_string_at(i):

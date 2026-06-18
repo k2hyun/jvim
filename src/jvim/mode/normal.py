@@ -537,7 +537,7 @@ class NormalMixin:
         combo = self.pending + char
         self.pending = ""
 
-        if self.read_only and combo not in ("yy", "gg", "ej"):
+        if self.read_only and combo not in ("yy", "gg", "ej", "es"):
             self._count_buf = ""
             self.status_msg = "[readonly]"
             return
@@ -573,6 +573,11 @@ class NormalMixin:
         if combo == "ej":
             self._count_buf = ""
             self._edit_embedded_json()
+            return
+
+        if combo == "es":
+            min_newlines = self._consume_count()
+            self._edit_embedded_string(min_newlines)
             return
 
         if self._pending_fold(combo):

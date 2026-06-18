@@ -458,6 +458,26 @@ class TestDiffEditorEmbeddedJson:
         # REPLACE 행에는 배경색이 있어야 함
         assert ej._line_background(1) == DiffEditor._DIFF_BG[DiffTag.REPLACE]
 
+    def test_find_ej_content_in_string_mode(self):
+        """Diff 앱은 es 상대편 문자열도 같은 조건으로 찾는다."""
+        text = "line 1\nline 2"
+        editor = DiffEditor(json.dumps({"text": text}))
+        app = JsonDiffApp("", "")
+
+        result = app._find_ej_content_in(editor, 0, "string", 1)
+
+        assert result == text
+
+    def test_find_ej_content_in_string_mode_respects_min_newlines(self):
+        """es count 조건을 만족하지 않는 상대편 문자열은 매칭하지 않는다."""
+        text = "line 1\nline 2"
+        editor = DiffEditor(json.dumps({"text": text}))
+        app = JsonDiffApp("", "")
+
+        result = app._find_ej_content_in(editor, 0, "string", 2)
+
+        assert result is None
+
     def test_ej_diff_both_sides(self):
         """양쪽 임베디드 JSON의 diff 계산 검증."""
         left_ej = '{\n    "key": "old_value"\n}'

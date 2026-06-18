@@ -200,6 +200,147 @@ class TestEmbeddedJson:
         # Cache should be marked dirty by _save_undo
         assert editor._cache_dirty is True
 
+    def test_edit_embedded_json_posts_json_kind(self):
+        """ej 요청은 JSON 편집 kind를 포함한다."""
+        inner = json.dumps({"nested": 1})
+        content = json.dumps({"data": inner})
+        editor = JsonEditor(content)
+        messages = []
+        editor.post_message = messages.append
+
+        editor._edit_embedded_json()
+
+        assert len(messages) == 1
+        assert messages[0].edit_kind == "json"
+        assert messages[0].content == '{\n    "nested": 1\n}'
+
+    def test_edit_embedded_string_requires_newline(self):
+        """es는 개행이 있는 string value를 편집 대상으로 보낸다."""
+        text = "line 1\nline 2"
+        editor = JsonEditor(json.dumps({"text": text}))
+        messages = []
+        editor.post_message = messages.append
+
+        editor._edit_embedded_string()
+
+        assert len(messages) == 1
+        assert messages[0].edit_kind == "string"
+        assert messages[0].min_newlines == 1
+        assert messages[0].content == text
+
+    def test_edit_embedded_string_rejects_single_line(self):
+        """es는 기본적으로 한 줄 string을 열지 않는다."""
+        editor = JsonEditor(json.dumps({"text": "single line"}))
+        messages = []
+        editor.post_message = messages.append
+
+        editor._edit_embedded_string()
+
+        assert messages == []
+        assert editor.status_msg == "string has fewer than 1 newline"
+
+    def test_es_uses_count_as_min_newlines(self):
+        """3es처럼 count를 최소 개행 수로 사용한다."""
+        text = "line 1\nline 2\nline 3"
+        editor = JsonEditor(json.dumps({"text": text}))
+        messages = []
+        editor.post_message = messages.append
+        editor._count_buf = "2"
+        editor.pending = "e"
+
+        editor._handle_pending("s", "s")
+
+        assert editor._count_buf == ""
+        assert len(messages) == 1
+        assert messages[0].min_newlines == 2
+
+    def test_string_edit_save_skips_json_validation(self):
+        """문자열 편집 패널은 일반 텍스트를 :w로 저장할 수 있다."""
+        editor = JsonEditor("line 1\nline 2")
+        editor._skip_json_validation = True
+        messages = []
+        editor.post_message = messages.append
+
+        editor._exec_command("w")
+
+        assert len(messages) == 1
+        assert messages[0].content == "line 1\nline 2"
+
+    def test_string_edit_save_updates_parent_json_string(self):
+        """es 저장은 부모 JSON 문자열에 다시 이스케이프되어 반영된다."""
+        from src.jvim.editor import JsonEditorApp
+
+        main_editor = JsonEditor(json.dumps({"text": "line 1\nline 2"}))
+        col_start, col_end, original = main_editor._find_string_at_cursor()
+        app = JsonEditorApp(initial_content="{}")
+        app._is_help_editor_focused = lambda: False
+        app._is_ej_editor_focused = lambda: True
+        app._update_ej_title = lambda: None
+        app.notify = lambda *args, **kwargs: None
+        app.query_one = (
+            lambda selector, cls=None: main_editor if selector == "#editor" else None
+        )
+        app._ej_stack = [(0, col_start, col_end, "", original, "string")]
+
+        app.on_json_editor_file_save_requested(
+            JsonEditor.FileSaveRequested("new 1\nnew 2", "", False)
+        )
+
+        assert json.loads(main_editor.get_content())["text"] == "new 1\nnew 2"
+
+    def test_nested_ej_inside_es_updates_parent_string(self):
+        """es 패널 안에서 ej를 저장한 뒤 부모 string까지 저장할 수 있다."""
+        from src.jvim.editor import JsonEditorApp
+
+        inner_json = json.dumps({"enabled": False})
+        multiline_text = "before\n" + json.dumps({"config": inner_json}) + "\nafter"
+        main_editor = JsonEditor(json.dumps({"text": multiline_text}))
+        es_col_start, es_col_end, es_original = main_editor._find_string_at_cursor()
+        es_editor = JsonEditor(multiline_text)
+        app = JsonEditorApp(initial_content="{}")
+        app._is_help_editor_focused = lambda: False
+        app._is_ej_editor_focused = lambda: True
+        app._update_ej_title = lambda: None
+        app.notify = lambda *args, **kwargs: None
+        app.query_one = (
+            lambda selector, cls=None: main_editor
+            if selector == "#editor"
+            else es_editor
+        )
+        app._ej_stack = [(0, es_col_start, es_col_end, "", es_original, "string")]
+
+        es_editor.cursor_row = 1
+        nested_col_start, nested_col_end, nested_original = (
+            es_editor._find_string_at_cursor()
+        )
+        app._ej_stack.append(
+            (
+                1,
+                nested_col_start,
+                nested_col_end,
+                es_editor.get_content(),
+                nested_original,
+                "json",
+            )
+        )
+
+        app.on_json_editor_file_save_requested(
+            JsonEditor.FileSaveRequested('{"enabled": true}', "", True)
+        )
+
+        assert len(app._ej_stack) == 1
+        assert es_editor._skip_json_validation is True
+        nested_line = json.loads(es_editor.lines[1])
+        assert json.loads(nested_line["config"]) == {"enabled": True}
+
+        app.on_json_editor_file_save_requested(
+            JsonEditor.FileSaveRequested(es_editor.get_content(), "", False)
+        )
+
+        saved_text = json.loads(main_editor.get_content())["text"]
+        saved_nested = json.loads(saved_text.split("\n")[1])
+        assert json.loads(saved_nested["config"]) == {"enabled": True}
+
 
 class TestJsonl:
     """Tests for JSONL file handling."""

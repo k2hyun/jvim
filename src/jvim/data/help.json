@@ -51,7 +51,8 @@
         "u": "undo",
         "Ctrl+r": "redo",
         ".": "repeat last edit",
-        "ej": "edit embedded JSON string"
+        "ej": "edit embedded JSON string",
+        "es": "edit multiline string"
     },
     "Visual Mode": {
         "v": "character-wise selection",

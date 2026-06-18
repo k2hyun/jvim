@@ -285,7 +285,7 @@ class CommandMixin:
                 self.status_msg = "[readonly]"
             return
         content = self.get_content()
-        if not force:
+        if not force and not getattr(self, "_skip_json_validation", False):
             valid, err = self._check_content(content)
             if not valid:
                 self.status_msg = err

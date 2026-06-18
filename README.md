@@ -20,7 +20,7 @@ JSON editor with vim-style keybindings, built with [Textual](https://github.com/
 - **JSONPath search** - Search using JSONPath expressions (`$.foo.bar`)
 - **Word search** - Search word under cursor with `*` (forward) and `#` (backward)
 - **JSONL support** - Edit JSON Lines files with smart formatting
-- **Embedded JSON editing** - Edit JSON strings within JSON with nested level support
+- **Embedded JSON/string editing** - Edit JSON strings and multiline string values in a side panel
 - **Visual mode** - Character-wise (`v`) and line-wise (`V`) selection with `d`/`y`/`c` operators
 - **Count prefix** - Vim-style numeric prefixes (`5j`, `3dd`, `d3d`) with fold-aware line operations
 - **Folding** - Collapse/expand JSON blocks and long string values
@@ -174,6 +174,12 @@ Using `ej` on the config line opens:
 
 After editing and saving, the parent is updated with the minified result.
 
+## Embedded String Editing (es mode)
+
+Use `es` on a JSON string value that contains at least one escaped newline (`\n`) to edit the decoded text in a separate panel. Save with `:w` to write the text back as a JSON string.
+
+You can prefix a count to require more newlines before opening: `3es` opens only when the decoded string contains at least three newline characters.
+
 ## Substitute
 
 jvim supports vim-style substitute commands for find-and-replace.
@@ -307,6 +313,7 @@ Also available as `jvd` shortcut.
 - **Cursor sync** - Cursor position syncs between panels
 - **Line numbers** - Logical line number (left) and JSONL record number (both panels)
 - **Embedded JSON diff** - `ej` to diff embedded JSON strings within each panel
+- **Embedded string diff** - `es` to diff multiline string values within each panel
 
 ## Keybindings
 

@@ -22,6 +22,7 @@ from .editor import _detect_jsonl
 from .widget import EditorMode, JsonEditor
 
 _KEY_RE = re.compile(r'^"([^"]+)"\s*:')
+_EJStackFrame = tuple[str, str]
 
 
 def _is_binary(path: Path) -> bool:
@@ -529,8 +530,10 @@ class JsonDiffApp(App):
         self.jsonl = jsonl
         self.file_pairs: list[tuple[str, str]] = file_pairs or []
         self.pair_index: int = 0
-        self._left_ej_stack: list[str] = []
-        self._right_ej_stack: list[str] = []
+        self._left_ej_stack: list[_EJStackFrame] = []
+        self._right_ej_stack: list[_EJStackFrame] = []
+        self._left_ej_kind: str = "json"
+        self._right_ej_kind: str = "json"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -690,6 +693,8 @@ class JsonDiffApp(App):
         # EJ 스택 초기화
         self._left_ej_stack.clear()
         self._right_ej_stack.clear()
+        self._left_ej_kind = "json"
+        self._right_ej_kind = "json"
         self.query_one("#left-ej-panel").remove_class("visible")
         self.query_one("#right-ej-panel").remove_class("visible")
 
@@ -819,19 +824,26 @@ class JsonDiffApp(App):
             other_content = self._find_ej_content_in(
                 other_ej_editor,
                 event.source_row,
+                event.edit_kind,
+                event.min_newlines,
             )
 
-            ej_stack.append(ej_editor.get_content())
+            ej_stack.append((ej_editor.get_content(), self._ej_kind(side)))
             if other_content is not None:
-                other_ej_stack.append(other_ej_editor.get_content())
+                other_ej_stack.append(
+                    (other_ej_editor.get_content(), self._ej_kind(other_side))
+                )
                 left_content = this_content if side == "left" else other_content
                 right_content = other_content if side == "left" else this_content
+                self._set_ej_kind("left", event.edit_kind)
+                self._set_ej_kind("right", event.edit_kind)
                 self._open_ej_with_diff(left_content, right_content)
                 self._update_ej_title(other_side)
             else:
                 lines = this_content.split("\n") if this_content else [""]
                 tags = [DiffTag.EQUAL] * len(lines)
                 ej_editor.set_diff_data(lines, tags, set(), [])
+                self._set_ej_kind(side, event.edit_kind)
 
             self._update_ej_title(side)
             ej_editor.focus()
@@ -840,11 +852,18 @@ class JsonDiffApp(App):
         # diff 에디터에서 ej 호출 → 양쪽 diff 표시
         this_content = event.content
         other_editor = self.query_one(f"#{other_side}-editor", DiffEditor)
-        other_content = self._find_ej_content_in(other_editor, event.source_row)
+        other_content = self._find_ej_content_in(
+            other_editor,
+            event.source_row,
+            event.edit_kind,
+            event.min_newlines,
+        )
 
         if other_content is not None:
             left_content = this_content if side == "left" else other_content
             right_content = other_content if side == "left" else this_content
+            self._set_ej_kind("left", event.edit_kind)
+            self._set_ej_kind("right", event.edit_kind)
             self._open_ej_with_diff(left_content, right_content)
         else:
             ej_editor = self.query_one(f"#{side}-ej-editor", DiffEditor)
@@ -852,6 +871,7 @@ class JsonDiffApp(App):
             lines = this_content.split("\n") if this_content else [""]
             tags = [DiffTag.EQUAL] * len(lines)
             ej_editor.set_diff_data(lines, tags, set(), [])
+            self._set_ej_kind(side, event.edit_kind)
             self._update_ej_title(side)
             ej_panel.add_class("visible")
 
@@ -861,8 +881,10 @@ class JsonDiffApp(App):
         self,
         editor: DiffEditor,
         source_row: int,
+        edit_kind: str = "json",
+        min_newlines: int = 0,
     ) -> str | None:
-        """에디터의 지정 행에서 임베디드 JSON을 찾아 포맷팅된 문자열 반환."""
+        """에디터의 지정 행에서 임베디드 편집 대상을 찾아 반환."""
         if source_row >= len(editor.lines):
             return None
 
@@ -877,6 +899,9 @@ class JsonDiffApp(App):
             return None
 
         _, _, content = result
+        if edit_kind == "string":
+            return content if content.count("\n") >= min_newlines else None
+
         try:
             parsed = json.loads(content)
             if not isinstance(parsed, (list, dict)):
@@ -943,28 +968,43 @@ class JsonDiffApp(App):
             # 반대편 스택도 함께 pop하여 diff 재계산
             if other_stack:
                 other_prev = other_stack.pop()
-                left_content = this_prev if side == "left" else other_prev
-                right_content = other_prev if side == "left" else this_prev
+                left_content = this_prev[0] if side == "left" else other_prev[0]
+                right_content = other_prev[0] if side == "left" else this_prev[0]
+                self._set_ej_kind(side, this_prev[1])
+                self._set_ej_kind(other_side, other_prev[1])
                 self._open_ej_with_diff(left_content, right_content)
                 self._update_ej_title(other_side)
             else:
                 ej_editor = self.query_one(f"#{side}-ej-editor", DiffEditor)
-                lines = this_prev.split("\n") if this_prev else [""]
+                lines = this_prev[0].split("\n") if this_prev[0] else [""]
                 tags = [DiffTag.EQUAL] * len(lines)
                 ej_editor.set_diff_data(lines, tags, set(), [])
+                self._set_ej_kind(side, this_prev[1])
             self._update_ej_title(side)
         else:
             # 패널 닫기 — 반대편도 함께
             self.query_one(f"#{side}-ej-panel").remove_class("visible")
             self.query_one(f"#{other_side}-ej-panel").remove_class("visible")
             other_stack.clear()
+            self._set_ej_kind(side, "json")
+            self._set_ej_kind(other_side, "json")
             self.query_one(f"#{side}-editor", DiffEditor).focus()
+
+    def _ej_kind(self, side: str) -> str:
+        return self._left_ej_kind if side == "left" else self._right_ej_kind
+
+    def _set_ej_kind(self, side: str, kind: str) -> None:
+        if side == "left":
+            self._left_ej_kind = kind
+        else:
+            self._right_ej_kind = kind
 
     def _update_ej_title(self, side: str) -> None:
         ej_stack = self._left_ej_stack if side == "left" else self._right_ej_stack
         level = len(ej_stack) + 1
+        label = "Embedded String" if self._ej_kind(side) == "string" else "Embedded JSON"
         title = self.query_one(f"#{side}-ej-title", Static)
-        title.update(f"[b]Embedded JSON[/b] [dim](level {level})[/dim]")
+        title.update(f"[b]{label}[/b] [dim](level {level})[/dim]")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "left-ej-close":

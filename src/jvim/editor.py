@@ -13,6 +13,8 @@ from textual.widgets import Button, Header, Static
 
 from .widget import JsonEditor
 
+_EmbeddedEditFrame = tuple[int, int, int, str, str, str]
+
 # Data directory path
 _DATA_DIR = Path(__file__).parent / "data"
 # Config directory and history file
@@ -95,8 +97,8 @@ class JsonEditorApp(App):
         self.file_list: list[str] = file_list or ([file_path] if file_path else [])
         self.file_index: int = 0
         self._alternate_file: str = ""
-        # Embedded edit state - stack of (row, col_start, col_end, parent_content, original_content)
-        self._ej_stack: list[tuple[int, int, int, str, str]] = []
+        # Stack entries: row, col_start, col_end, parent_content, original_content, edit_kind
+        self._ej_stack: list[_EmbeddedEditFrame] = []
         self._main_was_read_only: bool = False
         self._main_scroll_top: int = 0
 
@@ -243,15 +245,18 @@ class JsonEditorApp(App):
 
         # EJ editor: 부모 문서 갱신
         if self._is_ej_editor_focused() and self._ej_stack:
-            row, col_start, col_end, prev_content, _ = self._ej_stack[-1]
-            try:
-                parsed = json.loads(event.content)
-                minified = json.dumps(parsed, ensure_ascii=False)
-            except json.JSONDecodeError:
-                self.notify("Invalid JSON", severity="error")
-                return
+            row, col_start, col_end, prev_content, _, edit_kind = self._ej_stack[-1]
+            if edit_kind == "json":
+                try:
+                    parsed = json.loads(event.content)
+                    replacement = json.dumps(parsed, ensure_ascii=False)
+                except json.JSONDecodeError:
+                    self.notify("Invalid JSON", severity="error")
+                    return
+            else:
+                replacement = event.content
 
-            escaped = json.dumps(minified, ensure_ascii=False)
+            escaped = json.dumps(replacement, ensure_ascii=False)
             new_col_end = col_start + len(escaped)
 
             if event.quit_after:
@@ -262,14 +267,16 @@ class JsonEditorApp(App):
                     lines = prev_content.split("\n")
                     lines[row] = lines[row][:col_start] + escaped + lines[row][col_end:]
                     ej_editor.set_content("\n".join(lines))
+                    ej_editor._skip_json_validation = self._ej_stack[-1][5] == "string"
                     self._update_ej_title()
                 else:
                     main_editor = self.query_one("#editor", JsonEditor)
                     main_editor.read_only = self._main_was_read_only
                     main_editor.update_embedded_string(
-                        row, col_start, col_end, minified
+                        row, col_start, col_end, replacement
                     )
                     self.query_one("#ej-panel").remove_class("visible")
+                    self.query_one("#ej-editor", JsonEditor)._skip_json_validation = False
                     main_editor._scroll_top = self._main_scroll_top
                     main_editor.focus()
             else:
@@ -284,11 +291,12 @@ class JsonEditorApp(App):
                         new_col_end,
                         new_prev,
                         event.content,
+                        edit_kind,
                     )
                 else:
                     main_editor = self.query_one("#editor", JsonEditor)
                     main_editor.update_embedded_string(
-                        row, col_start, col_end, minified
+                        row, col_start, col_end, replacement
                     )
                     self._ej_stack[-1] = (
                         row,
@@ -296,10 +304,12 @@ class JsonEditorApp(App):
                         new_col_end,
                         prev_content,
                         event.content,
+                        edit_kind,
                     )
                 self._update_ej_title()
 
-            self.notify("Embedded JSON saved", severity="information")
+            saved_label = "Embedded string" if edit_kind == "string" else "Embedded JSON"
+            self.notify(f"{saved_label} saved", severity="information")
             return
 
         target = event.file_path or self.file_path
@@ -358,20 +368,23 @@ class JsonEditorApp(App):
             return False
         ej_editor = self.query_one("#ej-editor", JsonEditor)
         current = ej_editor.get_content()
-        _, _, _, _, original = self._ej_stack[-1]
+        _, _, _, _, original, _ = self._ej_stack[-1]
         return current != original
 
     def _update_ej_title(self) -> None:
         """Update ej panel title with current nesting level and modified indicator."""
         level = len(self._ej_stack)
+        edit_kind = self._ej_stack[-1][5] if self._ej_stack else "json"
+        label = "Edit String" if edit_kind == "string" else "Edit Embedded JSON"
         title = self.query_one("#ej-title", Static)
         modified = " [+]" if self._ej_has_unsaved_changes() else ""
-        title.update(f"[b]Edit Embedded JSON[/b] [dim](level {level}){modified}[/dim]")
+        title.update(f"[b]{label}[/b] [dim](level {level}){modified}[/dim]")
 
     def _close_ej_panel(self) -> None:
         """Close or pop one level of ej editing."""
         if not self._ej_stack:
             self.query_one("#ej-panel").remove_class("visible")
+            self.query_one("#ej-editor", JsonEditor)._skip_json_validation = False
             main_editor = self.query_one("#editor", JsonEditor)
             main_editor.read_only = self._main_was_read_only
             main_editor._scroll_top = self._main_scroll_top
@@ -379,16 +392,18 @@ class JsonEditorApp(App):
             return
 
         # Pop current level and get content to restore
-        _, _, _, restore_content, _ = self._ej_stack.pop()
+        _, _, _, restore_content, _, _ = self._ej_stack.pop()
 
         if self._ej_stack:
             # Restore previous level content
             ej_editor = self.query_one("#ej-editor", JsonEditor)
             ej_editor.set_content(restore_content)
+            ej_editor._skip_json_validation = self._ej_stack[-1][5] == "string"
             self._update_ej_title()
         else:
             # No more levels, close panel and restore main editor state
             self.query_one("#ej-panel").remove_class("visible")
+            self.query_one("#ej-editor", JsonEditor)._skip_json_validation = False
             main_editor = self.query_one("#editor", JsonEditor)
             main_editor.read_only = self._main_was_read_only
             main_editor._scroll_top = self._main_scroll_top
@@ -409,6 +424,7 @@ class JsonEditorApp(App):
                     event.source_col_end,
                     current_content,
                     event.content,  # original content for change detection
+                    event.edit_kind,
                 )
             )
         else:
@@ -424,10 +440,12 @@ class JsonEditorApp(App):
                     event.source_col_end,
                     "",  # No previous ej content
                     event.content,  # original content for change detection
+                    event.edit_kind,
                 )
             ]
 
         # Set content and show panel
+        ej_editor._skip_json_validation = event.edit_kind == "string"
         ej_editor.set_content(event.content)
         self._update_ej_title()
         self.query_one("#ej-panel").add_class("visible")
